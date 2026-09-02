@@ -1,0 +1,328 @@
+/* style.css — minimalist dark-mode framing for the sandbox. */
+
+:root {
+  --bg: #04040a;
+  --panel: rgba(14, 15, 26, 0.72);
+  --panel-border: rgba(140, 160, 255, 0.14);
+  --text: #e8ecff;
+  --muted: #8b93b8;
+  --accent: #4dd0ff;
+  --accent-2: #7c5cff;
+  --warn: #ffd166;
+  --radius: 12px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* The nebula sits behind the transparent canvases, so the fading trail buffer
+   dissolves into it instead of into flat black. */
+#stage {
+  position: fixed;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+  background:
+    radial-gradient(1100px 720px at 22% 18%, rgba(80, 60, 190, 0.22), transparent 62%),
+    radial-gradient(900px 640px at 78% 82%, rgba(0, 130, 190, 0.18), transparent 60%),
+    radial-gradient(600px 520px at 60% 30%, rgba(190, 40, 130, 0.1), transparent 65%),
+    var(--bg);
+}
+
+#scene,
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#overlay {
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ panel */
+
+#panel {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  width: 268px;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.panel-head h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.panel-head h1 span {
+  color: var(--accent);
+}
+
+.panel-body {
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.control label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.control output {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  opacity: 0.85;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range']:hover {
+  opacity: 1;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid rgba(10, 12, 24, 0.9);
+  box-shadow: 0 0 10px rgba(77, 208, 255, 0.7);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid rgba(10, 12, 24, 0.9);
+}
+
+.toggles {
+  gap: 8px;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.switch input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.switch:hover {
+  color: var(--text);
+}
+
+/* ----------------------------------------------------------------- buttons */
+
+.buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.btn {
+  appearance: none;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+}
+
+.btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(140, 160, 255, 0.32);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.3), rgba(77, 208, 255, 0.26));
+  border-color: rgba(124, 200, 255, 0.4);
+}
+
+.btn-wide {
+  grid-column: 1 / -1;
+}
+
+.btn.is-active {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.icon-btn span {
+  display: block;
+  width: 10px;
+  height: 2px;
+  background: var(--muted);
+  border-radius: 2px;
+}
+
+.icon-btn:hover span {
+  background: var(--accent);
+}
+
+/* --------------------------------------------------------------------- hud */
+
+.hud {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.hud div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hud b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.hud b.is-warn {
+  color: var(--warn);
+}
+
+.hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  border-top: 1px solid var(--panel-border);
+  padding-top: 12px;
+}
+
+kbd {
+  font: inherit;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+}
+
+/* --------------------------------------------------------------- collapsed */
+
+body.panel-collapsed #panel .panel-body {
+  display: none;
+}
+
+body.panel-collapsed #panel {
+  width: auto;
+}
+
+@media (max-width: 560px) {
+  #panel {
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-height: 62vh;
+  }
+}

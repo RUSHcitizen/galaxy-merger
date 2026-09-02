@@ -1,0 +1,17 @@
+{
+  "name": "cosmic-gravity-sandbox",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "An N-body Newtonian gravity sandbox with neon canvas rendering, built with Vite + vanilla TypeScript.",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="An N-body Newtonian gravity sandbox rendered on HTML5 canvas." />
+    <title>Cosmic Gravity Sandbox</title>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="scene"></canvas>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <aside id="panel" aria-label="Simulation controls">
+      <header class="panel-head">
+        <h1>Cosmic <span>Gravity</span></h1>
+        <button id="panel-toggle" class="icon-btn" title="Hide panel (H)" aria-label="Toggle panel">
+          <span></span>
+        </button>
+      </header>
+
+      <div class="panel-body">
+        <section class="group">
+          <div class="control">
+            <label for="time-step">Time step <output id="time-step-value">0.60×</output></label>
+            <input id="time-step" type="range" min="0" max="2" step="0.01" value="0.6" />
+          </div>
+          <div class="control">
+            <label for="gravity">Gravity (G) <output id="gravity-value">1.00</output></label>
+            <input id="gravity" type="range" min="0" max="4" step="0.01" value="1" />
+          </div>
+          <div class="control">
+            <label for="trail">Trail length <output id="trail-value">55%</output></label>
+            <input id="trail" type="range" min="0" max="1" step="0.01" value="0.55" />
+          </div>
+          <div class="control">
+            <label for="spawn-mass">Spawn mass <output id="spawn-mass-value">220</output></label>
+            <input id="spawn-mass" type="range" min="5" max="6000" step="5" value="220" />
+          </div>
+          <div class="control">
+            <label for="substeps">Substeps <output id="substeps-value">2</output></label>
+            <input id="substeps" type="range" min="1" max="6" step="1" value="2" />
+          </div>
+        </section>
+
+        <section class="group toggles">
+          <label class="switch">
+            <input id="glow" type="checkbox" checked />
+            <span>Neon glow</span>
+          </label>
+          <label class="switch">
+            <input id="show-vectors" type="checkbox" />
+            <span>Velocity vectors</span>
+          </label>
+        </section>
+
+        <section class="group buttons">
+          <button id="btn-pause" class="btn" aria-pressed="false">Pause</button>
+          <button id="btn-clear" class="btn">Clear</button>
+          <button id="btn-blackhole" class="btn">Black hole</button>
+          <button id="btn-solar" class="btn btn-primary">Solar system</button>
+          <button id="btn-cluster" class="btn btn-wide">Accretion cluster</button>
+        </section>
+
+        <section class="group hud">
+          <div><span>FPS</span><b id="hud-fps">–</b></div>
+          <div><span>Bodies</span><b id="hud-bodies">0</b></div>
+          <div><span>Merges</span><b id="hud-merges">0</b></div>
+          <div><span>Quality</span><b id="hud-quality">high</b></div>
+        </section>
+
+        <footer class="hint">
+          Click and drag on the void to fling a body — the arrow is its launch
+          vector. <kbd>Space</kbd> pause · <kbd>C</kbd> clear · <kbd>B</kbd> black
+          hole · <kbd>P</kbd> preset · <kbd>V</kbd> vectors · <kbd>H</kbd> panel
+        </footer>
+      </div>
+    </aside>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
