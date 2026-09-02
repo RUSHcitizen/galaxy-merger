@@ -4,13 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <meta name="description" content="An N-body Newtonian gravity sandbox rendered on HTML5 canvas." />
+    <meta name="description" content="An N-body Newtonian gravity sandbox with live Keplerian orbital elements." />
     <title>Cosmic Gravity Sandbox</title>
   </head>
   <body>
     <div id="stage">
-      <canvas id="scene"></canvas>
-      <canvas id="overlay"></canvas>
+      <canvas id="view"></canvas>
     </div>
 
     <aside id="panel" aria-label="Simulation controls">
@@ -23,6 +22,13 @@
 
       <div class="panel-body">
         <section class="group">
+          <h2 class="group-title">Scenes</h2>
+          <div id="presets" class="presets"></div>
+          <p id="preset-hint" class="hint-line"></p>
+        </section>
+
+        <section class="group">
+          <h2 class="group-title">Simulation</h2>
           <div class="control">
             <label for="time-step">Time step <output id="time-step-value">0.60×</output></label>
             <input id="time-step" type="range" min="0" max="2" step="0.01" value="0.6" />
@@ -32,49 +38,77 @@
             <input id="gravity" type="range" min="0" max="4" step="0.01" value="1" />
           </div>
           <div class="control">
-            <label for="trail">Trail length <output id="trail-value">55%</output></label>
-            <input id="trail" type="range" min="0" max="1" step="0.01" value="0.55" />
-          </div>
-          <div class="control">
             <label for="spawn-mass">Spawn mass <output id="spawn-mass-value">220</output></label>
-            <input id="spawn-mass" type="range" min="5" max="6000" step="5" value="220" />
+            <input id="spawn-mass" type="range" min="5" max="60000" step="5" value="220" />
           </div>
           <div class="control">
             <label for="substeps">Substeps <output id="substeps-value">2</output></label>
             <input id="substeps" type="range" min="1" max="6" step="1" value="2" />
           </div>
+          <div class="buttons">
+            <button id="btn-pause" class="btn" aria-pressed="false">Pause</button>
+            <button id="btn-step" class="btn" disabled>Step ›</button>
+            <button id="btn-clear" class="btn">Clear</button>
+            <button id="btn-blackhole" class="btn">Black hole</button>
+          </div>
         </section>
 
-        <section class="group toggles">
-          <label class="switch">
-            <input id="glow" type="checkbox" checked />
-            <span>Neon glow</span>
-          </label>
-          <label class="switch">
-            <input id="show-vectors" type="checkbox" />
-            <span>Velocity vectors</span>
-          </label>
+        <section class="group">
+          <h2 class="group-title">View</h2>
+          <div class="control">
+            <label for="zoom">Zoom <output id="zoom-value">1.00×</output></label>
+            <input id="zoom" type="range" min="0.08" max="8" step="0.01" value="1" />
+          </div>
+          <div class="control">
+            <label for="trail">Trail length <output id="trail-value">55%</output></label>
+            <input id="trail" type="range" min="0" max="1" step="0.01" value="0.55" />
+          </div>
+          <div class="control">
+            <label for="bloom">Bloom <output id="bloom-value">55%</output></label>
+            <input id="bloom" type="range" min="0" max="1" step="0.01" value="0.55" />
+          </div>
+          <div class="toggles">
+            <label class="switch"><input id="glow" type="checkbox" checked /><span>Neon glow</span></label>
+            <label class="switch"><input id="stars" type="checkbox" checked /><span>Starfield</span></label>
+            <label class="switch"><input id="show-orbits" type="checkbox" checked /><span>Orbit ellipse</span></label>
+            <label class="switch"><input id="predict" type="checkbox" checked /><span>Trajectory preview</span></label>
+            <label class="switch"><input id="show-vectors" type="checkbox" /><span>Velocity vectors</span></label>
+            <label class="switch"><input id="merging" type="checkbox" checked /><span>Merge on contact</span></label>
+            <label class="switch"><input id="follow" type="checkbox" /><span>Follow selection</span></label>
+          </div>
+          <div class="buttons">
+            <button id="btn-recenter" class="btn btn-wide">Recentre view</button>
+          </div>
         </section>
 
-        <section class="group buttons">
-          <button id="btn-pause" class="btn" aria-pressed="false">Pause</button>
-          <button id="btn-clear" class="btn">Clear</button>
-          <button id="btn-blackhole" class="btn">Black hole</button>
-          <button id="btn-solar" class="btn btn-primary">Solar system</button>
-          <button id="btn-cluster" class="btn btn-wide">Accretion cluster</button>
+        <section class="group">
+          <h2 class="group-title">
+            Selection
+            <i id="inspector-swatch" class="swatch" aria-hidden="true"></i>
+          </h2>
+          <div id="inspector" class="inspector is-empty">
+            <div id="inspector-body"></div>
+          </div>
         </section>
 
         <section class="group hud">
           <div><span>FPS</span><b id="hud-fps">–</b></div>
+          <div><span>Quality</span><b id="hud-quality">high</b></div>
           <div><span>Bodies</span><b id="hud-bodies">0</b></div>
           <div><span>Merges</span><b id="hud-merges">0</b></div>
-          <div><span>Quality</span><b id="hud-quality">high</b></div>
+          <div><span>Energy</span><b id="hud-energy">–</b></div>
+          <div><span>Ang. mom.</span><b id="hud-angular">–</b></div>
         </section>
 
         <footer class="hint">
-          Click and drag on the void to fling a body — the arrow is its launch
-          vector. <kbd>Space</kbd> pause · <kbd>C</kbd> clear · <kbd>B</kbd> black
-          hole · <kbd>P</kbd> preset · <kbd>V</kbd> vectors · <kbd>H</kbd> panel
+          <b>Drag</b> to fling · <b>click</b> a body to inspect ·
+          <b>shift-click</b> for a circular orbit · <b>right-drag</b> to pan ·
+          <b>wheel</b> to zoom
+          <div class="keys">
+            <kbd>Space</kbd> pause <kbd>.</kbd> step <kbd>C</kbd> clear
+            <kbd>B</kbd> black hole <kbd>F</kbd> follow <kbd>O</kbd> orbits
+            <kbd>V</kbd> vectors <kbd>1–6</kbd> scenes <kbd>H</kbd> panel
+          </div>
         </footer>
       </div>
     </aside>

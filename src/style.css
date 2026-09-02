@@ -2,14 +2,17 @@
 
 :root {
   --bg: #04040a;
-  --panel: rgba(14, 15, 26, 0.72);
-  --panel-border: rgba(140, 160, 255, 0.14);
+  --panel: rgba(13, 14, 24, 0.82);
+  --panel-solid: #0d0e18;
+  --panel-border: rgba(140, 160, 255, 0.13);
+  --hair: rgba(140, 160, 255, 0.09);
   --text: #e8ecff;
-  --muted: #8b93b8;
+  --muted: #838cb2;
+  --dim: #5c6488;
   --accent: #4dd0ff;
   --accent-2: #7c5cff;
   --warn: #ffd166;
-  --radius: 12px;
+  --radius: 13px;
   color-scheme: dark;
 }
 
@@ -41,22 +44,25 @@ body {
   cursor: crosshair;
   touch-action: none;
   background:
-    radial-gradient(1100px 720px at 22% 18%, rgba(80, 60, 190, 0.22), transparent 62%),
-    radial-gradient(900px 640px at 78% 82%, rgba(0, 130, 190, 0.18), transparent 60%),
-    radial-gradient(600px 520px at 60% 30%, rgba(190, 40, 130, 0.1), transparent 65%),
+    radial-gradient(1100px 720px at 22% 18%, rgba(78, 58, 186, 0.2), transparent 62%),
+    radial-gradient(900px 640px at 78% 82%, rgba(0, 122, 180, 0.16), transparent 60%),
+    radial-gradient(620px 520px at 62% 32%, rgba(184, 38, 126, 0.09), transparent 65%),
     var(--bg);
 }
 
-#scene,
-#overlay {
+#stage.is-panning {
+  cursor: grabbing;
+}
+
+/* A single composited layer. Starfield, trails and bloom are all flattened
+   into this canvas by the renderer rather than being separate stacked layers,
+   which measured far cheaper than letting the compositor blend them. */
+#view {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
-}
-
-#overlay {
   pointer-events: none;
 }
 
@@ -66,18 +72,20 @@ body {
   position: fixed;
   top: 16px;
   left: 16px;
-  width: 268px;
+  width: 286px;
   max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: var(--radius);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  /* Kept modest on purpose: a backdrop-filter over constantly-changing content
+     is re-evaluated every single frame, and the cost scales with the blur
+     radius and the panel's area. */
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.55);
   overflow: hidden;
-  transition: transform 0.22s ease, opacity 0.22s ease;
 }
 
 .panel-head {
@@ -87,13 +95,14 @@ body {
   gap: 8px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--panel-border);
+  background: linear-gradient(180deg, rgba(124, 92, 255, 0.09), transparent);
 }
 
 .panel-head h1 {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
@@ -102,34 +111,96 @@ body {
 }
 
 .panel-body {
-  padding: 14px;
+  padding: 4px 14px 14px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 160, 255, 0.24) transparent;
+}
+
+.panel-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.panel-body::-webkit-scrollbar-thumb {
+  background: rgba(140, 160, 255, 0.22);
+  border-radius: 4px;
 }
 
 .group {
   display: flex;
   flex-direction: column;
   gap: 11px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hair);
 }
 
-/* ---------------------------------------------------------------- controls */
+.group:last-of-type {
+  border-bottom: 0;
+}
+
+.group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 8px currentColor;
+}
+
+/* ---------------------------------------------------------------- presets */
+
+.presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.btn-preset {
+  font-size: 11.5px;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.btn-preset.is-active {
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.34), rgba(77, 208, 255, 0.24));
+  border-color: rgba(124, 200, 255, 0.46);
+  color: #fff;
+}
+
+.hint-line {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--dim);
+  min-height: 2.2em;
+}
+
+/* --------------------------------------------------------------- controls */
 
 .control label {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   font-size: 11px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
   margin-bottom: 6px;
 }
 
 .control output {
-  font-variant-numeric: tabular-nums;
+  font: 500 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--text);
   text-transform: none;
   letter-spacing: 0;
@@ -142,7 +213,7 @@ input[type='range'] {
   height: 4px;
   border-radius: 999px;
   background: linear-gradient(90deg, var(--accent-2), var(--accent));
-  opacity: 0.85;
+  opacity: 0.82;
   outline: none;
   cursor: pointer;
 }
@@ -171,23 +242,26 @@ input[type='range']::-moz-range-thumb {
 }
 
 .toggles {
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 10px;
 }
 
 .switch {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 7px;
+  font-size: 11.5px;
   color: var(--muted);
   cursor: pointer;
 }
 
 .switch input {
   accent-color: var(--accent);
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   cursor: pointer;
+  flex: none;
 }
 
 .switch:hover {
@@ -199,7 +273,7 @@ input[type='range']::-moz-range-thumb {
 .buttons {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 7px;
 }
 
 .btn {
@@ -215,18 +289,18 @@ input[type='range']::-moz-range-thumb {
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
   border-color: rgba(140, 160, 255, 0.32);
 }
 
-.btn:active {
+.btn:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-.btn-primary {
-  background: linear-gradient(135deg, rgba(124, 92, 255, 0.3), rgba(77, 208, 255, 0.26));
-  border-color: rgba(124, 200, 255, 0.4);
+.btn:disabled {
+  opacity: 0.36;
+  cursor: default;
 }
 
 .btn-wide {
@@ -262,27 +336,47 @@ input[type='range']::-moz-range-thumb {
   background: var(--accent);
 }
 
+/* --------------------------------------------------------------- inspector */
+
+.inspector div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+
+.inspector b {
+  color: var(--text);
+  font: 500 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.inspector .muted {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11.5px;
+  display: block;
+}
+
 /* --------------------------------------------------------------------- hud */
 
 .hud {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--panel-border);
+  gap: 5px 12px;
 }
 
 .hud div {
   display: flex;
   justify-content: space-between;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--dim);
 }
 
 .hud b {
   color: var(--text);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font: 500 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .hud b.is-warn {
@@ -291,20 +385,29 @@ input[type='range']::-moz-range-thumb {
 
 .hint {
   font-size: 11px;
-  line-height: 1.6;
-  color: var(--muted);
-  border-top: 1px solid var(--panel-border);
+  line-height: 1.65;
+  color: var(--dim);
+  border-top: 1px solid var(--hair);
   padding-top: 12px;
 }
 
+.hint b {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.keys {
+  margin-top: 8px;
+  line-height: 2;
+}
+
 kbd {
-  font: inherit;
-  font-size: 10px;
-  padding: 1px 5px;
+  font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 2px 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--panel-border);
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--hair);
+  color: var(--muted);
 }
 
 /* --------------------------------------------------------------- collapsed */
@@ -317,12 +420,12 @@ body.panel-collapsed #panel {
   width: auto;
 }
 
-@media (max-width: 560px) {
+@media (max-width: 620px) {
   #panel {
     top: 10px;
     left: 10px;
     right: 10px;
     width: auto;
-    max-height: 62vh;
+    max-height: 60vh;
   }
 }

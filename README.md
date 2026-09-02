@@ -1,8 +1,9 @@
 # Cosmic Gravity Sandbox
 
-An N-body Newtonian gravity sandbox — fling planets with the mouse, drop a black
-hole in the middle and watch everything accrete. Vite + vanilla TypeScript,
-rendered on a plain HTML5 canvas with no runtime dependencies.
+An N-body Newtonian gravity sandbox. Fling planets with the mouse, select one to
+read its live Keplerian orbital elements, drop a black hole in the middle and
+watch a galaxy merger throw off tidal tails. Vite + vanilla TypeScript, rendered
+on a plain HTML5 canvas with **no runtime dependencies**.
 
 ## Run it
 
@@ -28,8 +29,6 @@ host's Tailscale IP (`tailscale ip -4`) or its MagicDNS name
 `vite.config.ts` already whitelists `.ts.net`, which Vite would otherwise
 reject as an unrecognised Host header.
 
-Other scripts:
-
 | Command | Does |
 | --- | --- |
 | `npm run dev` | Dev server on all interfaces (LAN + Tailscale) |
@@ -39,102 +38,168 @@ Other scripts:
 
 ## Controls
 
-- **Click and drag** anywhere on the void to fling a body. The dashed arrow is
-  its launch vector; a plain click drops one at rest.
-- **Sliders** — time step, gravity (G), trail length, spawn mass, substeps.
-- **Buttons** — pause, clear, spawn a central black hole, load the stable solar
-  system preset, load an accretion cluster.
-- **Keys** — `Space` pause · `C` clear · `B` black hole · `P` preset ·
-  `V` velocity vectors · `H` hide panel.
+| Input | Action |
+| --- | --- |
+| **Drag** on empty space | Fling a new body along the drag vector; the preview shows where it will actually go |
+| **Click** a body | Select it — inspector, selection ring and its Kepler ellipse |
+| **Shift-click** | Insert a body on a circular orbit about whatever dominates there |
+| **Right / middle drag** | Pan the camera |
+| **Wheel** | Zoom about the cursor |
+
+`Space` pause · `.` single step · `C` clear · `B` black hole · `F` follow
+selection · `O` orbit ellipse · `V` velocity vectors · `1`–`6` scenes · `Esc`
+deselect · `H` hide panel.
+
+## Scenes
+
+| Scene | What it demonstrates |
+| --- | --- |
+| **Solar system** | Six planets spaced for genuine Hill stability, one with a moon |
+| **Binary stars** | Two stars about their barycentre with circumbinary planets |
+| **Figure eight** | The Chenciner–Montgomery three-body choreography |
+| **Lagrange trojans** | Asteroids librating at the stable L4/L5 points |
+| **Accretion disc** | A dense disc grinding itself down into a few large bodies |
+| **Galaxy merger** | Two counter-rotating discs on a grazing pass, throwing tidal tails |
 
 ## Structure
 
 | File | Responsibility |
 | --- | --- |
-| `src/config.ts` | Physics constants, render constants, palette, mutable UI state |
-| `src/physics.ts` | Vector maths, `World`, the force loop, leapfrog integrator, merges |
-| `src/renderer.ts` | Canvas rendering: persistence trails, glow sprites, aim overlay |
-| `src/ui.ts` | DOM controls, drag-to-fling, keyboard, scene presets |
+| `src/config.ts` | Physics/render constants, palette, mutable UI state |
+| `src/physics.ts` | Vector maths, `World`, force loop, leapfrog, merges, diagnostics |
+| `src/orbits.ts` | Keplerian elements, primary selection, trajectory prediction |
+| `src/camera.ts` | World↔screen transform, pan, zoom, follow |
+| `src/renderer.ts` | Persistence trails, glow sprites, bloom, starfield, overlays |
+| `src/particles.ts` | Merge debris sparks |
+| `src/presets.ts` | The six scenes |
+| `src/ui.ts` | Controls, pointer grammar, inspector |
 | `src/main.ts` | Bootstrap and the animation loop |
-| `src/style.css` | Dark-mode framing |
-| `index.html` | Markup shell |
 
-## How it works
+## The physics
 
-**Gravity.** Every unordered pair is visited once and Newton's third law
-supplies the other half, so the cost is n²/2 rather than n²:
+**Gravity.** Every unordered pair is visited once and Newton's third law supplies
+the other half, so the cost is n²/2 rather than n²:
 
 ```
 a_i = Σ G·m_j·(r_j − r_i) / (|r_j − r_i|² + ε²)^(3/2)
 ```
 
 The ε (Plummer softening, `PHYSICS.SOFTENING`) keeps the force finite when two
-bodies pass very close, instead of launching one to infinity.
+bodies pass very close instead of launching one to infinity.
 
 **Integration.** Kick-drift-kick leapfrog, which is symplectic: circular orbits
 stay circular instead of spiralling the way forward Euler does. Acceleration is
 carried on the body between steps, so each step needs one force evaluation.
 Measured drift over 40,000 steps of a circular orbit is 0.03% of the radius.
 
-**Merging.** Perfectly inelastic and exactly conservative:
+**Merging.** Perfectly inelastic and exactly conservative — measured error on
+both mass and momentum is zero:
 
 ```
 m = m₁ + m₂        v = (m₁v₁ + m₂v₂) / m        x = (m₁x₁ + m₂x₂) / m
 ```
 
-Radius follows constant density, r ∝ m^(1/3), so merging two equal discs gives
-r = ∛2·r₁ rather than 2·r₁.
+Radius follows constant density, r ∝ m^(1/3).
+
+**Orbital elements.** Selecting a body computes its osculating elements from the
+relative state vector — semi-major axis via vis-viva, the eccentricity vector,
+period, apoapsis and periapsis — and draws the resulting ellipse with the
+primary at a focus. Verified against the simulation itself: predicted period is
+within 0.2% of the period actually observed, and predicted apoapsis/periapsis
+within 0.5% of the extremes actually reached.
+
+Three details here are easy to get wrong, and all three were:
+
+- **Circular-orbit speed is not √(GM/r).** The simulation uses a *softened*
+  force, so the true circular speed is `sqrt(GM·r² / (r² + ε²)^(3/2))`. Using
+  the textbook formula over-speeds anything orbiting close in — a moon at
+  r ≈ 2.7ε is launched ~10% too fast and escapes within seconds.
+- **The primary is not the body pulling hardest.** The Sun pulls on our Moon
+  about twice as hard as the Earth does, yet the Moon plainly orbits the Earth.
+  What decides the hierarchy is which primary a body is most tightly *bound* to,
+  so `dominantAttractor` takes the smallest semi-major axis among heavier bodies
+  it is bound to. Picking by force reports every moon as orbiting the star.
+- **Planet spacing is a stability constraint, not decoration.** Two neighbouring
+  planets are Hill-stable only beyond ~2√3 mutual Hill radii; below that they
+  scatter each other onto crossing orbits and collide within a few dozen
+  revolutions. An earlier solar-system preset sat at 1.4 and lost half its
+  planets in 30 seconds. Every adjacent pair now sits at 4.3 or more.
 
 ## Rendering, and why it is fast
 
-The target was a smooth 60fps on a 2017 MacBook Pro, i.e. a ~16ms frame budget
-on an Intel integrated GPU. What that ruled in and out:
+The target was a smooth 60fps on a 2017 MacBook Pro — a ~16ms budget on Intel
+integrated graphics.
 
+- **One canvas, not four.** An earlier version stacked separate `<canvas>`
+  layers for starfield, scene, bloom and overlay, getting the additive bloom
+  free via CSS `mix-blend-mode: screen`. Measured, that was the most expensive
+  thing on the page: each extra full-screen composited layer costs real time and
+  a blend mode forces the compositor to read the backdrop back. Flattening
+  everything into one canvas with `globalCompositeOperation` cut the frame cost
+  by **2.5×** (63.5ms → 25.5ms in the test environment).
 - **Trails are a persistence buffer, not geometry.** Instead of clearing, the
-  canvas is erased slightly each frame with one `destination-out` rect. Cost is
-  a single fill regardless of body count — keeping a point history per body and
-  stroking thousands of segments would not fit the budget. The trail-length
-  slider sets the erase alpha.
-- **No `shadowBlur`.** It is the obvious way to get neon and it is brutally slow
-  on integrated GPUs. Glows are pre-rasterised radial-gradient sprites drawn
-  with `drawImage` under `'lighter'` blending.
-- **The sprite cache is bounded three ways.** Radii are bucketed, colours are
-  quantised (merges blend colours, which would otherwise mint a unique gradient
-  per body), eviction is LRU rather than a wholesale flush, and at most
-  `RENDER.SPRITE_BUDGET` gradients may be rasterised in one frame — anything
-  past that falls back to a plain disc. Before these bounds, 600 uniquely
-  coloured bodies cost 90ms/frame because the cache flushed and re-rasterised
-  every frame; after, 22ms.
+  buffer is erased slightly each frame with one `destination-out` rect — one
+  fill regardless of body count. Panning *translates* that buffer rather than
+  discarding it; only zoom forces a clear.
+- **No `shadowBlur`.** The obvious way to get neon, and brutally slow on
+  integrated GPUs. Glows are pre-rasterised radial-gradient sprites drawn under
+  `'lighter'`.
+- **The sprite cache is bounded three ways.** Radii bucketed, colours quantised
+  (merges blend colours, which would otherwise mint a unique gradient per body),
+  LRU eviction, and a per-frame rasterisation budget past which bodies fall back
+  to plain discs. Before these bounds, 600 uniquely coloured bodies cost
+  90ms/frame because the cache flushed and re-rasterised every frame; after,
+  22ms.
+- **Bloom is quarter-resolution and thresholded.** Downsample, threshold, blur
+  while small, stretch back. The threshold uses `destination-in` — which
+  multiplies alpha, squaring it — because in this buffer brightness lives mostly
+  in the alpha channel. `multiply` is the tempting operator and is wrong: it
+  squares colour but *unions* alpha, brightening faint residue instead of
+  removing it.
 - **Motion streaks.** A round-capped line from each body's previous position to
-  its current one. Without it a body travelling faster than its own diameter per
-  frame paints a dotted line into the persistence buffer. Bodies that barely
-  moved are skipped.
-- **DPR is capped at 2.** A retina 15" panel at full ratio is ~5M pixels of fill
-  per frame.
-- **Off-screen bodies are skipped** before touching the rasteriser, and escapees
-  are culled from the simulation entirely.
-- **Quality degrades automatically.** If smoothed frame time drifts above 21ms
-  the renderer shrinks glows and draws tiny bodies as discs, recovering when it
-  drops back under 14ms. The HUD shows `high` or `adaptive`.
-- **The hot loop never allocates.** No temporary vector objects per pair; the
-  aim arrow lives on a separate overlay canvas so transient UI never smears into
-  the trail buffer, and that canvas is only touched while dragging.
+  its current one; without it a body travelling faster than its own diameter per
+  frame paints a dotted line into the buffer.
+- **DPR capped at 2**, off-screen bodies skipped before the rasteriser,
+  escapees culled, and quality degrades automatically (smaller glows, no bloom)
+  above 21ms smoothed frame time, recovering below 14ms.
+- **Trajectory prediction is O(K), not O(n).** The preview integrates a test
+  particle against only the heaviest `PREDICT.ATTRACTORS` bodies using the same
+  leapfrog the simulation uses, so it can run every frame while you drag. Against
+  a single dominant primary it is exact — measured worst deviation over 320
+  predicted points is 0px.
 
 Measured physics cost per step (one force evaluation, no merging):
 
 | Bodies | Force loop | Collision pass |
 | --- | --- | --- |
-| 100 | 0.04 ms | 0.05 ms |
-| 250 | 0.21 ms | 0.15 ms |
-| 500 | 0.82 ms | 0.66 ms |
-| 900 | 2.68 ms | 2.14 ms |
+| 100 | 0.06 ms | 0.07 ms |
+| 250 | 0.29 ms | 0.19 ms |
+| 500 | 1.16 ms | 0.76 ms |
+| 900 | 3.81 ms | 2.41 ms |
 
-At the default 2 substeps, a 250-body scene spends ~0.6ms per frame on physics,
-leaving essentially the whole budget for drawing. `PHYSICS.MAX_BODIES` caps the
-world at 900; near that ceiling, drop substeps to 1.
+At the default 2 substeps a 250-body scene spends well under 1ms per frame on
+physics, leaving essentially the whole budget for drawing. `PHYSICS.MAX_BODIES`
+caps the world at 900; near that ceiling, drop substeps to 1.
+
+### Known trade-offs
+
+The orbital elements in the inspector are *Kepler* elements, which assume an
+unsoftened 1/r² force. For orbits well outside the softening length (ε = 6px,
+so essentially everything on screen) they are accurate to a fraction of a
+percent, as measured above. For a very tight orbit — a satellite only two or
+three ε from its primary — the softened force the simulation actually applies
+diverges from Newtonian, and the reported eccentricity drifts from zero
+accordingly.
+
+The persistence buffer never quite reaches zero: 8-bit alpha rounding leaves a
+residue around 1/255 where trails have been, which shows as very faint banding
+in long-lived scenes. Clearing it would mean either a visible periodic flash or
+per-body point history, which costs far more than it is worth. The bloom
+threshold keeps it from being amplified.
 
 ## Tuning
 
 Nearly everything worth changing is a named constant in `src/config.ts` —
 gravitational constant, softening length, collision overlap, density, body cap,
-cull radius, glow size, DPR cap and the adaptive-quality thresholds.
+cull radius, glow size, bloom scale and blur, DPR cap, camera limits, prediction
+depth and the adaptive-quality thresholds.

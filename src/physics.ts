@@ -94,6 +94,29 @@ export function makeBody(spec: BodySpec): Body {
 
 /* --------------------------------------------------------------------- world */
 
+/** Emitted when two bodies merge, so the renderer can throw off debris. */
+export interface MergeEvent {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  color: string;
+  /** Radius of the smaller body — scales the size of the burst. */
+  scale: number;
+}
+
+/** Bulk conservation figures, recomputed on a throttle for the HUD. */
+export interface Diagnostics {
+  kinetic: number;
+  potential: number;
+  total: number;
+  angularMomentum: number;
+  momentum: number;
+  barycentreX: number;
+  barycentreY: number;
+  mass: number;
+}
+
 export interface StepOptions {
   /** Simulation time to advance. */
   dt: number;
@@ -110,6 +133,8 @@ export class World {
   private accelDirty = true;
   /** Merges since the last read — the UI uses it for the collision counter. */
   mergeCount = 0;
+  /** Merge sites since the last drain, for the particle system. */
+  readonly mergeEvents: MergeEvent[] = [];
 
   add(body: Body): Body | null {
     if (this.bodies.length >= PHYSICS.MAX_BODIES) return null;
@@ -126,6 +151,7 @@ export class World {
     this.bodies.length = 0;
     this.accelDirty = true;
     this.mergeCount = 0;
+    this.mergeEvents.length = 0;
   }
 
   get count(): number {
@@ -313,6 +339,15 @@ export class World {
             : keep.kind;
         bi.color = bi.kind === 'blackhole' ? keep.color : mixColors(keep.color, gone.color, 0.75);
 
+        this.mergeEvents.push({
+          x: cx,
+          y: cy,
+          vx: bi.vx,
+          vy: bi.vy,
+          color: gone.color,
+          scale: Math.min(gone.radius, keep.radius),
+        });
+
         absorbed[j] = 1;
         merges++;
       }
@@ -330,6 +365,98 @@ export class World {
     }
 
     return merges;
+  }
+
+  /**
+   * Bulk conservation figures. The potential term is another O(n²) pass, so the
+   * caller throttles this — the HUD refreshes it a few times a second, not
+   * every frame.
+   *
+   *   KE = Σ ½mv²        PE = -Σ_{i<j} G·m_i·m_j / r_ij        L = Σ m(x·v_y − y·v_x)
+   *
+   * Total energy drifts a little as bodies merge (merging is inelastic, so
+   * kinetic energy is genuinely lost) but is otherwise near-constant, which is
+   * what the symplectic integrator buys.
+   */
+  diagnostics(G: number): Diagnostics {
+    const bodies = this.bodies;
+    const n = bodies.length;
+    const soft2 = PHYSICS.SOFTENING * PHYSICS.SOFTENING;
+
+    let kinetic = 0;
+    let potential = 0;
+    let px = 0;
+    let py = 0;
+    let mass = 0;
+    let bx = 0;
+    let by = 0;
+
+    for (let i = 0; i < n; i++) {
+      const b = bodies[i];
+      kinetic += 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy);
+      px += b.mass * b.vx;
+      py += b.mass * b.vy;
+      mass += b.mass;
+      bx += b.mass * b.x;
+      by += b.mass * b.y;
+    }
+
+    for (let i = 0; i < n; i++) {
+      const bi = bodies[i];
+      for (let j = i + 1; j < n; j++) {
+        const bj = bodies[j];
+        const dx = bj.x - bi.x;
+        const dy = bj.y - bi.y;
+        // Softened potential, matching the softened force the integrator uses.
+        potential -= (G * bi.mass * bj.mass) / Math.sqrt(dx * dx + dy * dy + soft2);
+      }
+    }
+
+    const cx = n > 0 ? bx / mass : 0;
+    const cy = n > 0 ? by / mass : 0;
+
+    // Angular momentum about the barycentre, so it does not drift with the
+    // system's bulk translation.
+    let angular = 0;
+    for (let i = 0; i < n; i++) {
+      const b = bodies[i];
+      angular += b.mass * ((b.x - cx) * b.vy - (b.y - cy) * b.vx);
+    }
+
+    return {
+      kinetic,
+      potential,
+      total: kinetic + potential,
+      angularMomentum: angular,
+      momentum: Math.hypot(px, py),
+      barycentreX: cx,
+      barycentreY: cy,
+      mass,
+    };
+  }
+
+  /** The heaviest body, used as a default camera target. */
+  heaviest(): Body | null {
+    let best: Body | null = null;
+    for (const b of this.bodies) if (!best || b.mass > best.mass) best = b;
+    return best;
+  }
+
+  /** Topmost body whose disc contains the given world point. */
+  pick(wx: number, wy: number, slack: number): Body | null {
+    let best: Body | null = null;
+    let bestD2 = Infinity;
+    for (const b of this.bodies) {
+      const dx = wx - b.x;
+      const dy = wy - b.y;
+      const d2 = dx * dx + dy * dy;
+      const reach = b.radius + slack;
+      if (d2 <= reach * reach && d2 < bestD2) {
+        bestD2 = d2;
+        best = b;
+      }
+    }
+    return best;
   }
 
   /** Drop bodies that have escaped far past the viewport. */
@@ -351,11 +478,6 @@ export class World {
 }
 
 /* ------------------------------------------------------------------- helpers */
-
-/** Circular-orbit speed for a satellite at distance r around mass M: √(GM/r). */
-export function orbitalSpeed(G: number, centralMass: number, r: number): number {
-  return Math.sqrt((G * centralMass) / Math.max(r, 1e-6));
-}
 
 const hexCache = new Map<string, [number, number, number]>();
 
