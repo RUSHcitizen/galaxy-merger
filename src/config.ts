@@ -30,6 +30,24 @@ export const PHYSICS = {
   BLACK_HOLE_MASS: 90000,
   /** Mass of the star used by the solar-system preset. */
   STAR_MASS: 26000,
+  /**
+   * Roche limit as a multiple of the primary's radius. Every body shares one
+   * density, so the density ratio in the Roche formula is 1 and the limit
+   * collapses to this constant times R_primary. 1.26 is the rigid-body value
+   * and 2.44 the fluid one; 1.35 sits just above rigid, which keeps every
+   * preset's innermost orbit safely outside its star's limit.
+   */
+  ROCHE_FACTOR: 1.35,
+  /** A tide only tears a body apart if the primary is this much heavier. */
+  DISRUPT_MASS_RATIO: 25,
+  /** Below this mass a body is already rubble and will not break up further. */
+  MIN_DISRUPT_MASS: 12,
+  /** Fragments produced per break-up. */
+  DISRUPT_PIECES: 4,
+  /** Velocity shear between adjacent fragments — what stretches the stream. */
+  DISRUPT_SHEAR: 0.22,
+  /** Frames a fresh fragment refuses to merge, so siblings can separate. */
+  DISRUPT_GRACE_FRAMES: 50,
 } as const;
 
 /** Rendering constants. */
@@ -100,6 +118,7 @@ export const COLORS = {
   blackHole: '#a06bff',
   ghost: '#8fd8ff',
   predict: '#7fe9ff',
+  lagrange: '#5cff9d',
   orbit: '#ffd166',
   select: '#ffffff',
 } as const;
@@ -137,6 +156,10 @@ export interface SandboxState {
   predict: boolean;
   /** Keep the camera centred on the selected body. */
   follow: boolean;
+  /** Tear bodies apart inside the Roche limit. */
+  tides: boolean;
+  /** View from a frame co-rotating with the selection's orbit. */
+  rotatingFrame: boolean;
 }
 
 export const state: SandboxState = {
@@ -155,6 +178,8 @@ export const state: SandboxState = {
   showOrbits: true,
   predict: true,
   follow: false,
+  tides: true,
+  rotatingFrame: false,
 };
 
 /** Drag pixels -> launch velocity (before the camera zoom is divided out). */

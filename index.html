@@ -25,6 +25,15 @@
 
       <div class="panel-body">
         <section class="group">
+          <h2 class="group-title">
+            Challenges
+            <b id="challenge-score" class="score">0 / 6</b>
+          </h2>
+          <div id="challenge-list" class="presets"></div>
+          <button id="btn-challenge-reset" class="btn btn-wide btn-quiet">Reset progress</button>
+        </section>
+
+        <section class="group">
           <h2 class="group-title">Scenes</h2>
           <div id="presets" class="presets"></div>
           <p id="preset-hint" class="hint-line"></p>
@@ -78,9 +87,12 @@
             <label class="switch"><input id="show-vectors" type="checkbox" /><span>Velocity vectors</span></label>
             <label class="switch"><input id="merging" type="checkbox" checked /><span>Merge on contact</span></label>
             <label class="switch"><input id="follow" type="checkbox" /><span>Follow selection</span></label>
+            <label class="switch"><input id="rotating" type="checkbox" /><span>Rotating frame</span></label>
+            <label class="switch"><input id="tides" type="checkbox" checked /><span>Tidal break-up</span></label>
           </div>
           <div class="buttons">
-            <button id="btn-recenter" class="btn btn-wide">Recentre view</button>
+            <button id="btn-recenter" class="btn">Recentre view</button>
+            <button id="btn-share" class="btn">Share system</button>
           </div>
         </section>
 
@@ -121,6 +133,9 @@
           <div id="inspector" class="inspector is-empty">
             <div id="inspector-body"></div>
           </div>
+          <div class="buttons">
+            <button id="btn-delete" class="btn btn-wide btn-quiet">Delete selected</button>
+          </div>
         </section>
 
         <section class="group hud">
@@ -141,6 +156,8 @@
         </footer>
       </div>
     </aside>
+
+    <div id="banner" class="banner" role="status" aria-live="polite"></div>
 
     <div id="help" class="help" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
       <div class="help-dialog">

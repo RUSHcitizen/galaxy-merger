@@ -81,8 +81,8 @@ export class Sparks {
    */
   draw(
     ctx: CanvasRenderingContext2D,
-    sx: (wx: number) => number,
-    sy: (wy: number) => number,
+    sx: (wx: number, wy: number) => number,
+    sy: (wx: number, wy: number) => number,
     zoom: number,
   ): void {
     for (let i = 0; i < this.count; i++) {
@@ -90,7 +90,7 @@ export class Sparks {
       ctx.globalAlpha = t * t;
       ctx.fillStyle = this.color[i];
       const r = Math.max(0.6, this.size[i] * zoom * (0.4 + t * 0.6));
-      ctx.fillRect(sx(this.x[i]) - r, sy(this.y[i]) - r, r * 2, r * 2);
+      ctx.fillRect(sx(this.x[i], this.y[i]) - r, sy(this.x[i], this.y[i]) - r, r * 2, r * 2);
     }
     ctx.globalAlpha = 1;
   }

@@ -32,6 +32,8 @@ import type { Renderer } from './renderer';
 import type { AudioEngine } from './audio';
 import type { QualityController, QualityMode } from './quality';
 import { matchShortcut, POINTER_HELP, SHORTCUTS, type ShortcutId } from './shortcuts';
+import { CHALLENGES, ChallengeRunner, lagrangeL4, type Challenge } from './challenges';
+import { encodeWorld } from './share';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -93,6 +95,12 @@ export interface UiHandles {
   validateSelection(): void;
   /** Re-sync controls after the auto-quality watcher changes tier. */
   onQualityChange(): void;
+  /** Redraw the challenge banner (timer, progress). */
+  refreshChallenge(): void;
+  /** A challenge just finished; refresh the list and play a cue. */
+  challengeEnded(win: boolean): void;
+  /** The world was replaced wholesale (e.g. by a shared link). */
+  onWorldReplaced(): void;
 }
 
 export function initUI(
@@ -101,6 +109,7 @@ export function initUI(
   camera: Camera,
   audio: AudioEngine,
   quality: QualityController,
+  runner: ChallengeRunner,
 ): UiHandles {
   const stage = el<HTMLElement>('stage');
   const pauseBtn = el<HTMLButtonElement>('btn-pause');
@@ -150,6 +159,8 @@ export function initUI(
   bindToggle('show-orbits', () => state.showOrbits, (v) => (state.showOrbits = v));
   bindToggle('predict', () => state.predict, (v) => (state.predict = v));
   const followBox = bindToggle('follow', () => state.follow, (v) => (state.follow = v));
+  bindToggle('tides', () => state.tides, (v) => (state.tides = v));
+  bindToggle('rotating', () => state.rotatingFrame, (v) => setRotatingFrame(v));
 
   /* ------------------------------------------------------------ audio ---- */
 
@@ -205,6 +216,9 @@ export function initUI(
     if (!body) {
       state.follow = false;
       followBox.checked = false;
+      // The rotating frame is defined by the selection; without one there is
+      // nothing to co-rotate with.
+      if (state.rotatingFrame) setRotatingFrame(false);
     }
     renderInspector();
   };
@@ -220,6 +234,8 @@ export function initUI(
     const preset = presetById(id);
     if (!preset) return;
     audio.scene();
+    runner.stop();
+    updateBanner();
     clearAll();
     camera.reset();
     camera.setZoom(preset.zoom);
@@ -247,6 +263,18 @@ export function initUI(
     if (world.add(blackHole(renderer.centerX, renderer.centerY))) audio.blackhole();
   };
 
+  /**
+   * Entering or leaving the rotating frame changes the world->screen mapping
+   * discontinuously, so the trail buffer — which holds history drawn under the
+   * old mapping — has to go.
+   */
+  const setRotatingFrame = (on: boolean) => {
+    state.rotatingFrame = on && !!selected;
+    el<HTMLInputElement>('rotating').checked = state.rotatingFrame;
+    if (!state.rotatingFrame) camera.setRotation(0);
+    renderer.clearAll();
+  };
+
   const recentre = () => {
     const target = selected ?? world.heaviest();
     if (target) camera.centerOn(target.x, target.y);
@@ -262,6 +290,37 @@ export function initUI(
     state.stepOnce = true;
   });
   el('btn-clear').addEventListener('click', clearAll);
+  const deleteSelected = () => {
+    if (!selected) return;
+    const i = world.bodies.indexOf(selected);
+    if (i >= 0) {
+      world.bodies.splice(i, 1);
+      world.markDirty();
+    }
+    select(null);
+    audio.ui();
+  };
+
+  const shareLink = async () => {
+    const hash = encodeWorld(world, camera.zoom);
+    const url = `${location.origin}${location.pathname}#w=${hash}`;
+    history.replaceState(null, '', `#w=${hash}`);
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(url);
+      ok = true;
+    } catch {
+      // Clipboard needs a secure context and permission; the URL bar now holds
+      // the link either way, so say so rather than failing silently.
+    }
+    const btn = el('btn-share');
+    btn.textContent = ok ? 'Link copied' : 'Link in address bar';
+    setTimeout(() => (btn.textContent = 'Share system'), 1800);
+    audio.ui();
+  };
+
+  el('btn-share').addEventListener('click', shareLink);
+  el('btn-delete').addEventListener('click', deleteSelected);
   el('btn-blackhole').addEventListener('click', spawnBlackHole);
   el('btn-recenter').addEventListener('click', recentre);
   el('panel-toggle').addEventListener('click', () => {
@@ -295,10 +354,12 @@ export function initUI(
    * point — the quickest way to build a stable system by hand.
    */
   const insertOrbiter = (wx: number, wy: number) => {
-    const probe = makeBody({ x: wx, y: wy, mass: state.spawnMass, color: randomColor() });
+    const probe = makeBody({
+      x: wx, y: wy, mass: state.spawnMass, color: randomColor(), origin: 'player',
+    });
     const primary = dominantAttractor(world.bodies, probe, state.gravity);
     if (!primary) {
-      world.add(probe);
+      if (world.add(probe)) runner.notePlayerBody(probe);
       return;
     }
     const dx = wx - primary.x;
@@ -313,7 +374,7 @@ export function initUI(
     probe.vy = primary.vy + (dx / r) * v;
     probe.px = probe.x;
     probe.py = probe.y;
-    world.add(probe);
+    if (world.add(probe)) runner.notePlayerBody(probe);
   };
 
   stage.addEventListener('pointerdown', (e) => {
@@ -331,14 +392,14 @@ export function initUI(
       stage.classList.add('is-panning');
     } else if (e.button === 0) {
       if (e.shiftKey) {
-        insertOrbiter(camera.worldX(sx), camera.worldY(sy));
+        insertOrbiter(camera.worldX(sx, sy), camera.worldY(sx, sy));
         mode = 'none';
         return;
       }
       mode = 'fling';
       dragColor = randomColor();
-      from.x = camera.worldX(sx);
-      from.y = camera.worldY(sy);
+      from.x = camera.worldX(sx, sy);
+      from.y = camera.worldY(sx, sy);
       to.x = from.x;
       to.y = from.y;
       pathCount = 0;
@@ -358,8 +419,8 @@ export function initUI(
       state.follow = false;
       followBox.checked = false;
     } else {
-      to.x = camera.worldX(sx);
-      to.y = camera.worldY(sy);
+      to.x = camera.worldX(sx, sy);
+      to.y = camera.worldY(sx, sy);
     }
     lastScreenX = sx;
     lastScreenY = sy;
@@ -378,7 +439,7 @@ export function initUI(
     if (!dragged) {
       // A click, not a drag: select whatever is under the cursor.
       const [sx, sy] = screenPos(e);
-      select(world.pick(camera.worldX(sx), camera.worldY(sy), 8 / camera.zoom));
+      select(world.pick(camera.worldX(sx, sy), camera.worldY(sx, sy), 8 / camera.zoom));
       return;
     }
 
@@ -395,9 +456,13 @@ export function initUI(
         vy,
         mass: state.spawnMass,
         color: dragColor,
+        origin: 'player',
       }),
     );
-    if (added) audio.launch(Math.hypot(vx, vy));
+    if (added) {
+      runner.notePlayerBody(added);
+      audio.launch(Math.hypot(vx, vy));
+    }
   };
 
   stage.addEventListener('pointerup', (e) => endDrag(e, true));
@@ -415,6 +480,88 @@ export function initUI(
     },
     { passive: false },
   );
+
+  /* --------------------------------------------------------- challenges --- */
+
+  const banner = el('banner');
+  const challengeList = el('challenge-list');
+
+  const renderChallengeList = () => {
+    challengeList.innerHTML = '';
+    for (const c of CHALLENGES) {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-challenge';
+      btn.classList.toggle('is-done', runner.completed.has(c.id));
+      btn.innerHTML =
+        `<span>${c.title}</span>` +
+        (runner.completed.has(c.id) ? '<i class="tick" aria-label="completed">✓</i>' : '');
+      btn.title = c.brief;
+      btn.addEventListener('click', () => startChallenge(c));
+      challengeList.appendChild(btn);
+    }
+    el('challenge-score').textContent = `${runner.completed.size} / ${CHALLENGES.length}`;
+  };
+
+  const startChallenge = (c: Challenge) => {
+    audio.scene();
+    select(null);
+    camera.reset();
+    camera.setZoom(c.zoom);
+    syncZoomSlider();
+    runner.start(c, world, state.gravity);
+    renderer.clearAll();
+    setPaused(false);
+    for (const btn of presetButtons) btn.classList.remove('is-active');
+    el('preset-hint').textContent = '';
+    updateBanner();
+  };
+
+  const endChallenge = () => {
+    runner.stop();
+    renderChallengeList();
+    updateBanner();
+  };
+
+  function updateBanner(): void {
+    const c = runner.active;
+    if (!c) {
+      banner.className = 'banner';
+      banner.innerHTML = '';
+      return;
+    }
+    const done = runner.state !== 'pending';
+    banner.className = 'banner is-open' + (done ? ` is-${runner.state}` : '');
+
+    const pct = Math.round(runner.progress * 100);
+    const time = Math.ceil(runner.remaining);
+    const status = done
+      ? runner.state === 'success'
+        ? 'Complete'
+        : 'Out of time'
+      : `${Math.floor(time / 60)}:${String(time % 60).padStart(2, '0')}`;
+
+    banner.innerHTML =
+      `<div class="banner-head"><b>${c.title}</b><span class="banner-time">${status}</span>` +
+      `<button class="icon-btn" data-close aria-label="End challenge">×</button></div>` +
+      `<p>${done && runner.state === 'failed' ? c.hint : c.brief}</p>` +
+      `<div class="meter"><i style="width:${pct}%"></i></div>`;
+
+    const close = banner.querySelector('[data-close]');
+    close?.addEventListener('click', endChallenge);
+  }
+
+  el('btn-challenge-reset').addEventListener('click', () => {
+    runner.completed.clear();
+    try {
+      localStorage.removeItem('cgs.challenges');
+    } catch {
+      /* ignore */
+    }
+    renderChallengeList();
+    audio.ui();
+  });
+
+  renderChallengeList();
 
   /* ------------------------------------------------------- help overlay --- */
 
@@ -491,6 +638,8 @@ export function initUI(
       setToggleState('sound', audio.enabled);
       audio.ui();
     },
+    rotframe: () => setRotatingFrame(!state.rotatingFrame),
+    delete: () => deleteSelected(),
     panel: () => document.body.classList.toggle('panel-collapsed'),
     help: () => setHelp(!helpOpen()),
   };
@@ -577,6 +726,23 @@ export function initUI(
   select(null);
 
   return {
+    refreshChallenge: updateBanner,
+    onWorldReplaced() {
+      select(null);
+      runner.stop();
+      updateBanner();
+      for (const btn of presetButtons) btn.classList.remove('is-active');
+      el('preset-hint').textContent = '';
+      syncZoomSlider();
+    },
+
+    challengeEnded(win: boolean) {
+      renderChallengeList();
+      updateBanner();
+      if (win) audio.scene();
+      else audio.ui();
+    },
+
     get selected() {
       return selected;
     },
@@ -594,6 +760,17 @@ export function initUI(
     },
 
     drawOverlay() {
+      // Co-rotate with the selection's orbit. The angle is the negative of the
+      // body's current bearing from its primary, which pins it to a fixed
+      // direction on screen and freezes the Lagrange points with it.
+      if (state.rotatingFrame && selected) {
+        const primary = dominantAttractor(world.bodies, selected, state.gravity);
+        if (primary) {
+          camera.setRotation(-Math.atan2(selected.y - primary.y, selected.x - primary.x));
+          camera.centerOn(primary.x, primary.y);
+        }
+      }
+
       // Live orbital elements for the selection.
       if (selected) {
         const primary = dominantAttractor(world.bodies, selected, state.gravity);
@@ -615,6 +792,12 @@ export function initUI(
           renderer.drawPath(pathBuffer, pathCount, COLORS.predict);
         }
         renderer.drawAim(from, to, radiusForMass(state.spawnMass), dragColor);
+      }
+
+      // Mark L4 while its challenge is running, so the target is visible.
+      if (runner.active?.id === 'trojan') {
+        const l4 = lagrangeL4(world);
+        if (l4) renderer.drawTarget(l4.x, l4.y, 60, COLORS.lagrange, 'L4');
       }
 
       renderer.drawScaleBar();

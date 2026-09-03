@@ -15,6 +15,8 @@ import { Sparks } from './particles';
 import { World } from './physics';
 import { QualityController } from './quality';
 import { Renderer } from './renderer';
+import { ChallengeRunner } from './challenges';
+import { decodeWorld } from './share';
 import { initUI } from './ui';
 
 const view = document.getElementById('view') as HTMLCanvasElement;
@@ -25,7 +27,32 @@ const renderer = new Renderer(view, camera, quality.profile);
 const world = new World();
 const sparks = new Sparks();
 const audio = new AudioEngine();
-const ui = initUI(world, renderer, camera, audio, quality);
+const runner = new ChallengeRunner();
+const ui = initUI(world, renderer, camera, audio, quality, runner);
+
+/**
+ * A shared system arrives as a URL fragment. This runs at load *and* on
+ * hashchange: pasting a link into the address bar of an already-open tab is a
+ * fragment-only navigation, which does not reload the document, so without the
+ * listener nothing would happen. A malformed fragment is ignored so a bad link
+ * degrades to the normal opening scene rather than a blank page.
+ */
+function loadFromHash(): boolean {
+  if (!location.hash.startsWith('#w=')) return false;
+  const shared = decodeWorld(location.hash.slice(3));
+  if (!shared || shared.bodies.length === 0) return false;
+
+  world.clear();
+  world.addAll(shared.bodies);
+  camera.reset();
+  camera.setZoom(shared.zoom);
+  renderer.clearAll();
+  ui.onWorldReplaced();
+  return true;
+}
+
+loadFromHash();
+window.addEventListener('hashchange', loadFromHash);
 
 // Debounced resize: recreating the backing stores is expensive.
 let resizeTimer = 0;
@@ -69,6 +96,15 @@ function frame(now: number): void {
     };
     for (let i = 0; i < steps; i++) world.step(opts);
 
+    world.tickCooldowns(scale);
+
+    // Tides act before collisions: a body should shatter on the way in rather
+    // than merge whole into whatever is tearing it apart.
+    if (state.tides) {
+      world.resolveTides();
+      drainDisruptEvents();
+    }
+
     // Once per frame is plenty: merges are a discrete event, not a force.
     if (state.merging) {
       world.resolveCollisions();
@@ -91,6 +127,14 @@ function frame(now: number): void {
     ui.onQualityChange();
   }
 
+  // The challenge watcher sees wall-clock seconds, not simulation time, so a
+  // "hold it for 10 seconds" objective means the same at any time step.
+  if (runner.running) {
+    const outcome = runner.update(world, state.gravity, Math.min(0.25, elapsed / 1000));
+    if (outcome) ui.challengeEnded(outcome === 'success');
+    else ui.refreshChallenge();
+  }
+
   hudTimer += elapsed;
   if (hudTimer > 250) {
     hudTimer = 0;
@@ -103,7 +147,20 @@ function frame(now: number): void {
     ui.updateDiagnostics(world.diagnostics(state.gravity));
   }
 
-  requestAnimationFrame(frame);
+  /** Tidal break-ups get their own burst, brighter and wider than a merge. */
+function drainDisruptEvents(): void {
+  const events = world.disruptEvents;
+  if (events.length === 0) return;
+  let loudest = 0;
+  for (const d of events) {
+    sparks.emit(d.x, d.y, 0, 0, d.color, 14, 1.1 + d.scale * 0.15);
+    if (d.scale > loudest) loudest = d.scale;
+  }
+  audio.merge(Math.min(1, 0.45 + loudest / 20));
+  events.length = 0;
+}
+
+requestAnimationFrame(frame);
 }
 
 /**

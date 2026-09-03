@@ -19,6 +19,18 @@ export class Camera {
   vw = 1;
   vh = 1;
 
+  /**
+   * Frame rotation in radians. Non-zero puts the view in a *rotating reference
+   * frame*: co-rotating with a body's orbit makes its primary and itself sit
+   * still, and the Lagrange points — which are fixed only in this frame —
+   * become stationary spots you can actually park something at.
+   */
+  rotation = 0;
+  private cos = 1;
+  private sin = 0;
+  /** Set when the frame angle changed this frame. */
+  rotationChanged = false;
+
   private targetZoom = 1;
   /** Camera position at the end of the previous frame. */
   private lastX = 0;
@@ -39,26 +51,50 @@ export class Camera {
     }
   }
 
-  screenX(wx: number): number {
-    return (wx - this.x) * this.zoom + this.vw * 0.5;
+  setRotation(angle: number): void {
+    if (angle === this.rotation) return;
+    this.rotation = angle;
+    this.cos = Math.cos(angle);
+    this.sin = Math.sin(angle);
+    this.rotationChanged = true;
   }
 
-  screenY(wy: number): number {
-    return (wy - this.y) * this.zoom + this.vh * 0.5;
+  /*
+   * Projection. With a rotating frame the screen x of a point depends on both
+   * world coordinates, so these take the full point rather than one axis.
+   */
+
+  screenX(wx: number, wy: number): number {
+    const dx = wx - this.x;
+    const dy = wy - this.y;
+    return (dx * this.cos - dy * this.sin) * this.zoom + this.vw * 0.5;
   }
 
-  worldX(sx: number): number {
-    return (sx - this.vw * 0.5) / this.zoom + this.x;
+  screenY(wx: number, wy: number): number {
+    const dx = wx - this.x;
+    const dy = wy - this.y;
+    return (dx * this.sin + dy * this.cos) * this.zoom + this.vh * 0.5;
   }
 
-  worldY(sy: number): number {
-    return (sy - this.vh * 0.5) / this.zoom + this.y;
+  worldX(sx: number, sy: number): number {
+    const ux = (sx - this.vw * 0.5) / this.zoom;
+    const uy = (sy - this.vh * 0.5) / this.zoom;
+    return this.x + ux * this.cos + uy * this.sin;
+  }
+
+  worldY(sx: number, sy: number): number {
+    const ux = (sx - this.vw * 0.5) / this.zoom;
+    const uy = (sy - this.vh * 0.5) / this.zoom;
+    return this.y - ux * this.sin + uy * this.cos;
   }
 
   /** Drag the world by a screen-space delta. */
   panByScreen(dx: number, dy: number): void {
-    this.x -= dx / this.zoom;
-    this.y -= dy / this.zoom;
+    // Undo the frame rotation so a drag moves the world the way it looks.
+    const ux = dx / this.zoom;
+    const uy = dy / this.zoom;
+    this.x -= ux * this.cos + uy * this.sin;
+    this.y -= -ux * this.sin + uy * this.cos;
   }
 
   /** Zoom about a screen anchor so the point under the cursor stays put. */
@@ -70,12 +106,15 @@ export class Camera {
     if (next === this.targetZoom) return;
 
     // Anchor: keep the world point under the cursor fixed across the change.
-    const wx = this.worldX(sx);
-    const wy = this.worldY(sy);
+    const wx = this.worldX(sx, sy);
+    const wy = this.worldY(sx, sy);
     this.targetZoom = next;
     this.zoom = next;
-    this.x = wx - (sx - this.vw * 0.5) / this.zoom;
-    this.y = wy - (sy - this.vh * 0.5) / this.zoom;
+    // Re-solve the centre so that (wx, wy) still lands on (sx, sy).
+    const ux = (sx - this.vw * 0.5) / this.zoom;
+    const uy = (sy - this.vh * 0.5) / this.zoom;
+    this.x = wx - (ux * this.cos + uy * this.sin);
+    this.y = wy - (-ux * this.sin + uy * this.cos);
     this.zoomed = true;
   }
 
@@ -94,6 +133,7 @@ export class Camera {
   reset(): void {
     this.x = 0;
     this.y = 0;
+    this.setRotation(0);
     this.setZoom(1);
   }
 
@@ -128,6 +168,7 @@ export class Camera {
   clearMoved(): void {
     this.moved = false;
     this.zoomed = false;
+    this.rotationChanged = false;
     this.panScreenX = 0;
     this.panScreenY = 0;
   }

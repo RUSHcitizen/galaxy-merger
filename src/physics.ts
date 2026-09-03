@@ -55,7 +55,18 @@ export interface Body {
   radius: number;
   color: string;
   kind: BodyKind;
+  /** Where this body came from — the challenge runner scores player spawns. */
+  origin: BodyOrigin;
+  /**
+   * Frames during which this body refuses to merge. Tidal fragments are born
+   * overlapping their siblings; without a grace period they would re-merge
+   * into the parent on the very next step.
+   */
+  noMergeFrames: number;
 }
+
+/** How a body entered the world. */
+export type BodyOrigin = 'preset' | 'player' | 'fragment';
 
 let nextId = 1;
 
@@ -72,6 +83,8 @@ export interface BodySpec {
   mass: number;
   color: string;
   kind?: BodyKind;
+  origin?: BodyOrigin;
+  noMergeFrames?: number;
 }
 
 export function makeBody(spec: BodySpec): Body {
@@ -89,6 +102,8 @@ export function makeBody(spec: BodySpec): Body {
     radius: radiusForMass(spec.mass),
     color: spec.color,
     kind: spec.kind ?? 'body',
+    origin: spec.origin ?? 'preset',
+    noMergeFrames: spec.noMergeFrames ?? 0,
   };
 }
 
@@ -102,6 +117,19 @@ export interface MergeEvent {
   vy: number;
   color: string;
   /** Radius of the smaller body — scales the size of the burst. */
+  scale: number;
+  /** True when the survivor is a black hole, i.e. something was swallowed. */
+  intoBlackHole: boolean;
+  /** Mass of the absorbed body. */
+  mass: number;
+}
+
+/** Emitted when a body is torn apart by tides. */
+export interface DisruptEvent {
+  x: number;
+  y: number;
+  color: string;
+  /** Radius of the body that broke up. */
   scale: number;
 }
 
@@ -135,6 +163,14 @@ export class World {
   mergeCount = 0;
   /** Merge sites since the last drain, for the particle system. */
   readonly mergeEvents: MergeEvent[] = [];
+  /** Tidal break-up sites since the last drain. */
+  readonly disruptEvents: DisruptEvent[] = [];
+  /**
+   * Mass consumed by black holes, cumulative. Mass rather than a body count:
+   * a rock that breaks up at the Roche limit arrives as four fragments, and
+   * counting bodies would score it four times over.
+   */
+  swallowedMass = 0;
   /**
    * Live body cap. Lowered by the quality tier: the force loop is O(n²), so
    * this is the main lever on CPU cost for a weak machine.
@@ -157,6 +193,8 @@ export class World {
     this.accelDirty = true;
     this.mergeCount = 0;
     this.mergeEvents.length = 0;
+    this.disruptEvents.length = 0;
+    this.swallowedMass = 0;
   }
 
   get count(): number {
@@ -311,6 +349,15 @@ export class World {
       for (let j = i + 1; j < n; j++) {
         if (absorbed[j]) continue;
         const bj = bodies[j];
+        /*
+         * The grace period exists so the siblings of one break-up can separate
+         * instead of instantly recombining, so it applies only when *both*
+         * bodies are in it. Requiring just one would let a fragment fall
+         * straight through the primary that shattered it — and a body passing
+         * through the centre of a deep potential well picks up an enormous,
+         * badly-integrated kick and is flung back out at escape speed.
+         */
+        if (bi.noMergeFrames > 0 && bj.noMergeFrames > 0) continue;
 
         const dx = bj.x - bi.x;
         const dy = bj.y - bi.y;
@@ -351,12 +398,16 @@ export class World {
           vy: bi.vy,
           color: gone.color,
           scale: Math.min(gone.radius, keep.radius),
+          intoBlackHole: bi.kind === 'blackhole',
+          mass: gone.mass,
         });
 
         absorbed[j] = 1;
         merges++;
       }
     }
+
+    for (const e of this.mergeEvents) if (e.intoBlackHole) this.swallowedMass += e.mass;
 
     if (merges > 0) {
       // Single compaction pass — cheaper than repeated splice() calls.
@@ -462,6 +513,123 @@ export class World {
       }
     }
     return best;
+  }
+
+  /**
+   * Tidal break-up. A satellite closer to its primary than the Roche limit is
+   * pulled apart, because the difference in gravitational pull across its own
+   * width exceeds the self-gravity holding it together:
+   *
+   *     d_roche = k · R_primary · (rho_primary / rho_satellite)^(1/3)
+   *
+   * with k ≈ 1.26 for a rigid body and 2.44 for a fluid one. Every body here is
+   * built at one constant density (r ∝ m^(1/3)), so the density ratio is 1 and
+   * the limit is just a multiple of the primary's radius.
+   *
+   * Fragments are laid out along the orbital direction and given a velocity
+   * shear — the inner ones orbit faster — which is what actually produces the
+   * long debris streams seen in real tidal disruption events. Mass and momentum
+   * are conserved exactly: the offsets are symmetric about the parent, so the
+   * momentum they add sums to zero.
+   */
+  resolveTides(): number {
+    const bodies = this.bodies;
+    const n = bodies.length;
+    if (n < 2) return 0;
+
+    let broken = 0;
+
+    for (let i = 0; i < n; i++) {
+      const b = bodies[i];
+      // A black hole has no structure to pull apart; tiny bodies are already
+      // rubble, and stopping there is what guarantees the recursion terminates.
+      if (b.kind === 'blackhole') continue;
+      if (b.mass < PHYSICS.MIN_DISRUPT_MASS) continue;
+      if (b.noMergeFrames > 0) continue;
+      // Refuse to shatter if there is no room for the pieces.
+      if (this.bodies.length + PHYSICS.DISRUPT_PIECES > this.maxBodies) break;
+
+      let primary: Body | null = null;
+      for (let j = 0; j < n; j++) {
+        const p = bodies[j];
+        if (p === b) continue;
+        // Only a much heavier body raises a tide worth the name; two similar
+        // masses simply collide.
+        if (p.mass < b.mass * PHYSICS.DISRUPT_MASS_RATIO) continue;
+        const dx = p.x - b.x;
+        const dy = p.y - b.y;
+        const roche = PHYSICS.ROCHE_FACTOR * p.radius;
+        if (dx * dx + dy * dy < roche * roche) {
+          if (!primary || p.mass > primary.mass) primary = p;
+        }
+      }
+      if (!primary) continue;
+
+      this.shatter(i, primary);
+      broken++;
+      // The parent slot now holds a fragment; leave the rest to later frames.
+    }
+
+    return broken;
+  }
+
+  /** Replace bodies[index] with a stream of fragments. */
+  private shatter(index: number, primary: Body): void {
+    const b = this.bodies[index];
+    const pieces = PHYSICS.DISRUPT_PIECES;
+
+    this.disruptEvents.push({ x: b.x, y: b.y, color: b.color, scale: b.radius });
+
+    // Along-track unit vector: the direction the body is already moving
+    // relative to its primary, which is the axis a tidal stream stretches on.
+    let ux = b.vx - primary.vx;
+    let uy = b.vy - primary.vy;
+    const speed = Math.hypot(ux, uy);
+    if (speed > 1e-6) {
+      ux /= speed;
+      uy /= speed;
+    } else {
+      ux = 1;
+      uy = 0;
+    }
+
+    const fragMass = b.mass / pieces;
+    const fragRadius = radiusForMass(fragMass);
+    // Spread the chain over a few parent radii so the pieces start apart.
+    const spacing = Math.max(fragRadius * 2.2, b.radius * 0.9);
+    const shear = PHYSICS.DISRUPT_SHEAR;
+
+    const made: Body[] = [];
+    for (let k = 0; k < pieces; k++) {
+      // Symmetric offsets: ..., -1.5, -0.5, +0.5, +1.5, ... so they sum to zero
+      // and the fragments carry exactly the parent's momentum.
+      const t = k - (pieces - 1) / 2;
+      made.push(
+        makeBody({
+          x: b.x + ux * t * spacing,
+          y: b.y + uy * t * spacing,
+          vx: b.vx + ux * t * shear,
+          vy: b.vy + uy * t * shear,
+          mass: fragMass,
+          color: b.color,
+          origin: 'fragment',
+          noMergeFrames: PHYSICS.DISRUPT_GRACE_FRAMES,
+        }),
+      );
+    }
+
+    // Overwrite the parent in place, append the rest.
+    this.bodies[index] = made[0];
+    for (let k = 1; k < made.length; k++) this.bodies.push(made[k]);
+    this.accelDirty = true;
+  }
+
+  /** Tick down per-body merge grace periods. */
+  tickCooldowns(dt: number): void {
+    const bodies = this.bodies;
+    for (let i = 0; i < bodies.length; i++) {
+      if (bodies[i].noMergeFrames > 0) bodies[i].noMergeFrames -= dt;
+    }
   }
 
   /** Drop bodies that have escaped far past the viewport. */

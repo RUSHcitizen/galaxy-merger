@@ -17,6 +17,8 @@ export type ShortcutId =
   | 'predict'
   | 'recentre'
   | 'mute'
+  | 'rotframe'
+  | 'delete'
   | 'deselect'
   | 'panel'
   | 'help'
@@ -41,8 +43,10 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'orbits', keys: ['O'], label: 'Toggle orbit ellipse', group: 'View' },
   { id: 'vectors', keys: ['V'], label: 'Toggle velocity vectors', group: 'View' },
   { id: 'predict', keys: ['T'], label: 'Toggle trajectory preview', group: 'View' },
+  { id: 'rotframe', keys: ['G'], label: 'Rotating reference frame', group: 'View' },
 
   { id: 'follow', keys: ['F'], label: 'Follow the selected body', group: 'Selection' },
+  { id: 'delete', keys: ['Del'], label: 'Delete the selected body', group: 'Selection' },
   { id: 'deselect', keys: ['Esc'], label: 'Deselect / close overlay', group: 'Selection' },
 
   { id: 'mute', keys: ['M'], label: 'Mute / unmute sound', group: 'Interface' },
@@ -75,6 +79,9 @@ export function matchShortcut(e: KeyboardEvent): ShortcutId | null {
       return 'step';
     case 'Escape':
       return 'deselect';
+    case 'Delete':
+    case 'Backspace':
+      return 'delete';
     case '?':
     case '/':
       return 'help';
@@ -97,6 +104,8 @@ export function matchShortcut(e: KeyboardEvent): ShortcutId | null {
       return 'recentre';
     case 'm':
       return 'mute';
+    case 'g':
+      return 'rotframe';
     case 'h':
       return 'panel';
     default:

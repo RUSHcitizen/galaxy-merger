@@ -52,7 +52,8 @@ shortcut cannot end up documented but unhandled (or the reverse).
 
 `Space` pause · `.` single step · `C` clear · `B` black hole · `R` recentre ·
 `F` follow · `O` orbit ellipse · `V` velocity vectors · `T` trajectory preview ·
-`M` mute · `1`–`6` scenes · `Esc` deselect · `H` hide panel · `?` shortcuts.
+`M` mute · `G` rotating frame · `Del` delete selected · `1`–`6` scenes ·
+`Esc` deselect · `H` hide panel · `?` shortcuts.
 
 ## Sound
 
@@ -68,6 +69,26 @@ produce dozens in a single frame — so every sound passes a voice cap and a
 per-kind minimum interval, and the loop aggregates a frame's merges into one
 call. Measured under a heavy merge storm that holds voice creation to ~10/s.
 Mute state and volume persist in `localStorage`.
+
+## Challenges
+
+Six missions, each scored from the live simulation in orbital-mechanics terms
+rather than by anything the game hands you. Progress is saved locally.
+
+| Mission | Objective |
+| --- | --- |
+| **Make Orbit** | Get anything into a closed orbit and hold it 10s |
+| **Circularize** | Hold eccentricity under 0.08 for 8s |
+| **Thread the Needle** | Park in the lane between two planets, without disturbing either |
+| **Gravity Assist** | Escape the system using the giant — a straight burn out does not count |
+| **Lagrange Parking** | Hold station at L4 for 12s |
+| **Feed the Void** | Push three rocks' worth of mass past an event horizon in 90s |
+
+Conditions that must *hold* accumulate in seconds, so clipping through the right
+state for a single frame never counts. Each mission was tested two ways: played
+by a script to confirm it is winnable, and left completely idle for its full
+time limit to confirm it cannot complete itself. Both checks caught real
+problems — see below.
 
 ## Scenes
 
@@ -94,8 +115,46 @@ Mute state and volume persist in `localStorage`.
 | `src/audio.ts` | Synthesized sound effects, voice capping, rate limiting |
 | `src/quality.ts` | Quality tiers and the frame-time watcher |
 | `src/shortcuts.ts` | The keyboard registry both the handler and overlay read |
+| `src/challenges.ts` | The six missions and the run/scoring state machine |
+| `src/share.ts` | World serialization to and from a URL fragment |
 | `src/ui.ts` | Controls, pointer grammar, inspector, help overlay |
 | `src/main.ts` | Bootstrap and the animation loop |
+
+## Tidal disruption
+
+A body closer to its primary than the Roche limit is pulled apart, because the
+difference in gravitational pull across its own width exceeds the self-gravity
+holding it together:
+
+```
+d_roche = k · R_primary · (rho_primary / rho_satellite)^(1/3)
+```
+
+with k ≈ 1.26 rigid and 2.44 fluid. Every body shares one density here, so the
+limit is a constant times the primary's radius. Fragments are laid out along the
+orbital direction with a velocity shear — inner pieces orbit faster — which is
+what produces the long debris streams seen in real disruption events. Mass and
+momentum are conserved exactly (measured error: zero), because the offsets are
+symmetric about the parent.
+
+Fragments get a brief grace period during which they refuse to merge, or they
+would recombine into the parent on the next step. That grace applies only when
+*both* bodies are in it — an earlier version required just one, which let a
+fragment fall straight *through* the black hole that shredded it, pick up an
+enormous badly-integrated kick from the centre of the potential well, and get
+flung back out at escape speed. That single rule made one mission unwinnable.
+
+## Rotating reference frame
+
+Press `G` with a body selected to co-rotate with its orbit. Its primary and the
+body itself go still, and the Lagrange points — which are fixed points only in
+this frame — stop moving, so the trojan clouds visibly librate around L4 and L5
+instead of sweeping around the star. Verified numerically: a body on a circular
+orbit, viewed co-rotating, stays within 0.02px on screen over 600 steps.
+
+The trail buffer is deliberately *not* reprojected when the frame angle changes.
+Each trail pixel was drawn under the mapping in force at the time, which is
+exactly the trajectory in that frame; only pan and zoom invalidate it.
 
 ## The physics
 
@@ -203,6 +262,15 @@ At the default 2 substeps a 250-body scene spends well under 1ms per frame on
 physics, leaving essentially the whole budget for drawing. `PHYSICS.MAX_BODIES`
 caps the world at 900; near that ceiling, drop substeps to 1.
 
+## Sharing a system
+
+**Share system** encodes every body into the URL fragment and copies the link.
+Loading one restores the exact state — position, velocity, mass, colour and kind
+round-trip with zero error, and a malformed fragment is ignored rather than
+breaking the page. The handler runs on `hashchange` as well as at load, because
+pasting a link into the address bar of an already-open tab is a fragment-only
+navigation that does not reload the document.
+
 ## Running on low-end hardware
 
 The sandbox targets a 2017 MacBook Pro *and* a low-end Chromebook with DDR3
@@ -245,6 +313,34 @@ would happily hold hundreds of megabytes. Evicted canvases are shrunk to 0×0 to
 release their backing store immediately. The pan scratch buffer — another
 full-screen surface — is not allocated until the camera actually moves. Live
 sprite usage is shown in the HUD.
+
+## What testing caught
+
+Every feature here was checked against the simulation rather than assumed, and
+that repeatedly found real bugs:
+
+- **Feed the Void completed itself.** First version dropped rocks from rest, so
+  they simply fell in. Put on eccentric orbits at a common radius they instead
+  collided with *each other*, and each merge robbed angular momentum until
+  something fell in unaided — still self-completing. Circular orbits at evenly
+  spaced radii then ground themselves down to fewer rocks than the objective
+  needed, because at 38px apart they sat at 2.0 mutual Hill radii, under the
+  2*sqrt(3) stability threshold. They are now geometrically spaced at 4.3.
+- **Scoring by body count was wrong.** A rock shatters into four fragments at
+  the Roche limit, so feeding one scored four. Scoring by consumed *mass* makes
+  a shattered rock count exactly once.
+- **Gravity Assist accepted a straight burn.** Testing for "passed near the
+  giant and is now escaping" would pass a probe that was already unbound. It now
+  requires the probe to arrive at the giant still bound and leave unbound, so
+  the encounter has to be what freed it. A scripted cheat attempt fails; 52 of
+  234 sampled honest launches succeed.
+- **The event horizon rendered white.** Drawn into the trail buffer, a black
+  hole that had been eating left its surroundings saturated and the blurred
+  bloom bled straight over the disc. Horizons are now drawn after the bloom
+  composite; the centre pixel measures #05050b as it should.
+- **Shared links silently did nothing** when pasted into an already-open tab.
+  The first test could not detect this because the body count happened to match
+  either way.
 
 ### Known trade-offs
 

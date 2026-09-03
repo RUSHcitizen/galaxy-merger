@@ -179,12 +179,13 @@ export class Renderer {
     this.spriteBytes = 0;
   }
 
+  /** World point at the centre of the viewport. */
   get centerX(): number {
-    return this.camera.worldX(this.width / 2);
+    return this.camera.worldX(this.width / 2, this.height / 2);
   }
 
   get centerY(): number {
-    return this.camera.worldY(this.height / 2);
+    return this.camera.worldY(this.width / 2, this.height / 2);
   }
 
   /** Wipe the persistence buffer immediately (used by Clear). */
@@ -410,6 +411,10 @@ export class Renderer {
     const zoom = cam.zoom;
 
     if (cam.moved) {
+      // Deliberately not reprojected for rotation: in a rotating frame each
+      // trail pixel was drawn with the mapping in force at the time, which is
+      // exactly the trajectory *in that frame*. Only pan and zoom invalidate
+      // the buffer.
       this.reprojectTrails();
       this.drawStars(state.stars);
       cam.clearMoved();
@@ -426,8 +431,8 @@ export class Renderer {
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       const r = Math.max(0.7, b.radius * zoom);
-      const x = cam.screenX(b.x);
-      const y = cam.screenY(b.y);
+      const x = cam.screenX(b.x, b.y);
+      const y = cam.screenY(b.x, b.y);
 
       // Cull off-screen bodies before touching the rasteriser.
       const pad = r * RENDER.GLOW_MULT + 4;
@@ -450,19 +455,38 @@ export class Renderer {
     }
 
     if (sparks.count > 0) {
-      sparks.draw(ctx, (wx) => cam.screenX(wx), (wy) => cam.screenY(wy), zoom);
+      sparks.draw(ctx, (wx, wy) => cam.screenX(wx, wy), (wx, wy) => cam.screenY(wx, wy), zoom);
     }
 
     ctx.globalCompositeOperation = 'source-over';
 
-    // Black holes are drawn last and opaquely: an event horizon punched out of
-    // whatever glow surrounds it, plus a thin accretion ring.
+    if (state.showVectors) this.drawVectors(bodies);
+
+    // Flatten everything onto the visible canvas. Vector overlays (aim arrow,
+    // orbit ellipse, selection) are drawn straight onto it afterwards by the
+    // UI, so they never smear into the persistence buffer.
+    this.composite(state, this.buildBloom(state));
+
+    // Event horizons go on *after* the bloom composite. Drawn into the trail
+    // buffer instead, they get washed out: a black hole that has been eating
+    // leaves the surrounding pixels saturated, and the blurred bloom bleeds
+    // straight over the disc — turning the one thing that must read as black
+    // into a white blob.
+    this.drawHorizons(bodies);
+  }
+
+  /** Opaque event horizons plus their accretion ring, drawn on the view. */
+  private drawHorizons(bodies: Body[]): void {
+    const ctx = this.view;
+    const cam = this.camera;
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (b.kind !== 'blackhole') continue;
-      const r = Math.max(1.5, b.radius * zoom);
-      const x = cam.screenX(b.x);
-      const y = cam.screenY(b.y);
+      const r = Math.max(1.5, b.radius * cam.zoom);
+      const x = cam.screenX(b.x, b.y);
+      const y = cam.screenY(b.x, b.y);
+      if (x < -r || y < -r || x > this.width + r || y > this.height + r) continue;
+
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fillStyle = '#05050b';
@@ -471,13 +495,6 @@ export class Renderer {
       ctx.strokeStyle = b.color;
       ctx.stroke();
     }
-
-    if (state.showVectors) this.drawVectors(bodies);
-
-    // Flatten everything onto the visible canvas. Vector overlays (aim arrow,
-    // orbit ellipse, selection) are drawn straight onto it afterwards by the
-    // UI, so they never smear into the persistence buffer.
-    this.composite(state, this.buildBloom(state));
   }
 
   /**
@@ -503,8 +520,8 @@ export class Renderer {
       // Too small to matter, or a merge teleporting a body to the barycentre.
       if (d2 * zoom * zoom < 1 || d2 > maxStreak2) continue;
 
-      const x = cam.screenX(b.x);
-      const y = cam.screenY(b.y);
+      const x = cam.screenX(b.x, b.y);
+      const y = cam.screenY(b.x, b.y);
       const r = b.radius * zoom;
       const pad = r + RENDER.MAX_STREAK * zoom;
       if (x < -pad || y < -pad || x > this.width + pad || y > this.height + pad) continue;
@@ -516,7 +533,7 @@ export class Renderer {
       ctx.lineWidth = Math.max(2, r * 2);
       ctx.globalAlpha = 1;
       ctx.beginPath();
-      ctx.moveTo(cam.screenX(b.px), cam.screenY(b.py));
+      ctx.moveTo(cam.screenX(b.px, b.py), cam.screenY(b.px, b.py));
       ctx.lineTo(x, y);
       ctx.stroke();
     }
@@ -531,8 +548,8 @@ export class Renderer {
     ctx.beginPath();
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
-      ctx.moveTo(cam.screenX(b.x), cam.screenY(b.y));
-      ctx.lineTo(cam.screenX(b.x + b.vx * 6), cam.screenY(b.y + b.vy * 6));
+      ctx.moveTo(cam.screenX(b.x, b.y), cam.screenY(b.x, b.y));
+      ctx.lineTo(cam.screenX(b.x + b.vx * 6, b.y + b.vy * 6), cam.screenY(b.x + b.vx * 6, b.y + b.vy * 6));
     }
     ctx.stroke();
   }
@@ -631,10 +648,10 @@ export class Renderer {
   drawAim(from: Vec2, to: Vec2, radius: number, color: string): void {
     const ctx = this.view;
     const cam = this.camera;
-    const fx = cam.screenX(from.x);
-    const fy = cam.screenY(from.y);
-    const tx = cam.screenX(to.x);
-    const ty = cam.screenY(to.y);
+    const fx = cam.screenX(from.x, from.y);
+    const fy = cam.screenY(from.x, from.y);
+    const tx = cam.screenX(to.x, to.y);
+    const ty = cam.screenY(to.x, to.y);
 
     const dx = tx - fx;
     const dy = ty - fy;
@@ -691,9 +708,9 @@ export class Renderer {
     ctx.lineWidth = 1.4;
     ctx.globalAlpha = 0.75;
     ctx.beginPath();
-    ctx.moveTo(cam.screenX(points[0]), cam.screenY(points[1]));
+    ctx.moveTo(cam.screenX(points[0], points[1]), cam.screenY(points[0], points[1]));
     for (let i = 1; i < count; i++) {
-      ctx.lineTo(cam.screenX(points[i * 2]), cam.screenY(points[i * 2 + 1]));
+      ctx.lineTo(cam.screenX(points[i * 2], points[i * 2 + 1]), cam.screenY(points[i * 2], points[i * 2 + 1]));
     }
     ctx.stroke();
 
@@ -708,8 +725,8 @@ export class Renderer {
   drawSelection(body: Body, elements: OrbitElements | null): void {
     const ctx = this.view;
     const cam = this.camera;
-    const x = cam.screenX(body.x);
-    const y = cam.screenY(body.y);
+    const x = cam.screenX(body.x, body.y);
+    const y = cam.screenY(body.x, body.y);
     const r = Math.max(6, body.radius * cam.zoom + 6);
 
     ctx.save();
@@ -723,8 +740,8 @@ export class Renderer {
     ctx.setLineDash([]);
 
     if (elements) {
-      const px = cam.screenX(elements.primary.x);
-      const py = cam.screenY(elements.primary.y);
+      const px = cam.screenX(elements.primary.x, elements.primary.y);
+      const py = cam.screenY(elements.primary.x, elements.primary.y);
       ctx.globalAlpha = 0.35;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -750,11 +767,13 @@ export class Renderer {
     if (!isFinite(a) || a <= 0 || a > 60000) return;
 
     const c = a * elements.e;
-    const px = cam.screenX(elements.primary.x);
-    const py = cam.screenY(elements.primary.y);
-    // Centre lies opposite periapsis from the focus.
-    const cxp = px - Math.cos(elements.argP) * c;
-    const cyp = py - Math.sin(elements.argP) * c;
+    const px = cam.screenX(elements.primary.x, elements.primary.y);
+    const py = cam.screenY(elements.primary.x, elements.primary.y);
+    // Centre lies opposite periapsis from the focus. Periapsis is a world-space
+    // direction, so it picks up the frame rotation on the way to the screen.
+    const ang = elements.argP + cam.rotation;
+    const cxp = px - Math.cos(ang) * c;
+    const cyp = py - Math.sin(ang) * c;
 
     ctx.save();
     ctx.strokeStyle = COLORS.orbit;
@@ -762,7 +781,7 @@ export class Renderer {
     ctx.lineWidth = 1.1;
     ctx.setLineDash([6, 6]);
     ctx.beginPath();
-    ctx.ellipse(cxp, cyp, a, b, elements.argP, 0, Math.PI * 2);
+    ctx.ellipse(cxp, cyp, a, b, elements.argP + cam.rotation, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
 
@@ -771,16 +790,43 @@ export class Renderer {
     ctx.fillStyle = COLORS.orbit;
     const peri = elements.periapsis * cam.zoom;
     const apo = elements.apoapsis * cam.zoom;
-    dot(ctx, px + Math.cos(elements.argP) * peri, py + Math.sin(elements.argP) * peri, 2.5);
-    dot(ctx, px - Math.cos(elements.argP) * apo, py - Math.sin(elements.argP) * apo, 2.5);
+    dot(ctx, px + Math.cos(ang) * peri, py + Math.sin(ang) * peri, 2.5);
+    dot(ctx, px - Math.cos(ang) * apo, py - Math.sin(ang) * apo, 2.5);
+    ctx.restore();
+  }
+
+  /** A labelled target ring — used to mark a challenge objective like L4. */
+  drawTarget(wx: number, wy: number, worldRadius: number, color: string, label: string): void {
+    const ctx = this.view;
+    const cam = this.camera;
+    const x = cam.screenX(wx, wy);
+    const y = cam.screenY(wx, wy);
+    const r = Math.max(6, worldRadius * cam.zoom);
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([5, 6]);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.globalAlpha = 0.9;
+    dot(ctx, x, y, 2);
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x, y - r - 6);
     ctx.restore();
   }
 
   /** Small cross at the system barycentre. */
   drawBarycentre(wx: number, wy: number): void {
     const ctx = this.view;
-    const x = this.camera.screenX(wx);
-    const y = this.camera.screenY(wy);
+    const x = this.camera.screenX(wx, wy);
+    const y = this.camera.screenY(wx, wy);
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
     ctx.lineWidth = 1;
