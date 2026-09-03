@@ -429,3 +429,157 @@ body.panel-collapsed #panel {
     max-height: 60vh;
   }
 }
+
+/* ------------------------------------------------------------- head actions */
+
+.head-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-btn {
+  font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+  color: var(--muted);
+}
+
+.icon-btn:hover {
+  color: var(--accent);
+  border-color: rgba(140, 160, 255, 0.32);
+}
+
+/* ------------------------------------------------------------------ select */
+
+.control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.control-row label {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+select {
+  appearance: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 6px 26px 6px 10px;
+  cursor: pointer;
+  /* Chevron drawn inline so no image request is needed. */
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: right 12px center, right 7px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+select:hover {
+  border-color: rgba(140, 160, 255, 0.32);
+}
+
+select option {
+  background: var(--panel-solid);
+  color: var(--text);
+}
+
+/* --------------------------------------------------------- help overlay */
+
+.help {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 4, 10, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.help.is-open {
+  display: flex;
+}
+
+.help-dialog {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.62);
+  overflow: hidden;
+}
+
+.help-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--hair);
+  background: linear-gradient(180deg, rgba(124, 92, 255, 0.1), transparent);
+}
+
+.help-dialog h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.help-dialog footer {
+  padding: 11px 18px;
+  border-top: 1px solid var(--hair);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.help-grid {
+  padding: 6px 18px 16px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 28px;
+}
+
+.help-grid h3 {
+  margin: 16px 0 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.help-grid div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid rgba(140, 160, 255, 0.05);
+}
+
+.help-grid kbd + kbd {
+  margin-left: 3px;
+}
+
+@media (max-width: 620px) {
+  .help-grid {
+    grid-template-columns: 1fr;
+  }
+}

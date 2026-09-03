@@ -14,7 +14,6 @@ import {
   CAMERA,
   COLORS,
   FLING_SCALE,
-  PHYSICS,
   PREDICT,
   randomColor,
   state,
@@ -30,6 +29,9 @@ import {
 } from './orbits';
 import { blackHole, PRESETS, presetById } from './presets';
 import type { Renderer } from './renderer';
+import type { AudioEngine } from './audio';
+import type { QualityController, QualityMode } from './quality';
+import { matchShortcut, POINTER_HELP, SHORTCUTS, type ShortcutId } from './shortcuts';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -85,13 +87,21 @@ export interface UiHandles {
   readonly elements: OrbitElements | null;
   /** Called by the loop once per frame to draw drag previews and selection. */
   drawOverlay(): void;
-  updateHud(fps: number, bodies: number, merges: number, degraded: boolean): void;
+  updateHud(fps: number, bodies: number, merges: number): void;
   updateDiagnostics(d: Diagnostics): void;
   /** Drop a selection that no longer exists (merged or culled away). */
   validateSelection(): void;
+  /** Re-sync controls after the auto-quality watcher changes tier. */
+  onQualityChange(): void;
 }
 
-export function initUI(world: World, renderer: Renderer, camera: Camera): UiHandles {
+export function initUI(
+  world: World,
+  renderer: Renderer,
+  camera: Camera,
+  audio: AudioEngine,
+  quality: QualityController,
+): UiHandles {
   const stage = el<HTMLElement>('stage');
   const pauseBtn = el<HTMLButtonElement>('btn-pause');
 
@@ -141,6 +151,43 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
   bindToggle('predict', () => state.predict, (v) => (state.predict = v));
   const followBox = bindToggle('follow', () => state.follow, (v) => (state.follow = v));
 
+  /* ------------------------------------------------------------ audio ---- */
+
+  bindToggle('sound', () => audio.enabled, (v) => {
+    audio.setEnabled(v);
+    if (v) audio.ui();
+  });
+  bindSlider('volume', (v) => (v <= 0 ? 'off' : Math.round(v * 100) + '%'), (v) => {
+    audio.setVolume(v);
+  });
+  // Reflect whatever was restored from localStorage.
+  el<HTMLInputElement>('volume').value = String(audio.volume);
+  el('volume-value').textContent =
+    audio.volume <= 0 ? 'off' : Math.round(audio.volume * 100) + '%';
+
+  /* ---------------------------------------------------------- quality ---- */
+
+  const qualitySelect = el<HTMLSelectElement>('quality');
+  qualitySelect.value = quality.mode;
+  qualitySelect.addEventListener('change', () => {
+    if (quality.setMode(qualitySelect.value as QualityMode)) renderer.setProfile(quality.profile);
+    world.maxBodies = quality.profile.maxBodies;
+    clampSubsteps();
+    audio.ui();
+  });
+
+  /** Keep the substeps slider inside what the current tier allows. */
+  const substepsInput = el<HTMLInputElement>('substeps');
+  const clampSubsteps = () => {
+    const max = quality.profile.maxSubsteps;
+    substepsInput.max = String(max);
+    if (state.substeps > max) {
+      state.substeps = max;
+      substepsInput.value = String(max);
+      el('substeps-value').textContent = String(max);
+    }
+  };
+
   /* ----------------------------------------------------------- buttons ---- */
 
   const setPaused = (paused: boolean) => {
@@ -152,6 +199,7 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
   };
 
   const select = (body: Body | null) => {
+    if (body && body !== selected) audio.select();
     selected = body;
     elements = null;
     if (!body) {
@@ -162,6 +210,7 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
   };
 
   const clearAll = () => {
+    audio.ui();
     world.clear();
     select(null);
     renderer.clearAll();
@@ -170,6 +219,7 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
   const loadPreset = (id: string) => {
     const preset = presetById(id);
     if (!preset) return;
+    audio.scene();
     clearAll();
     camera.reset();
     camera.setZoom(preset.zoom);
@@ -193,20 +243,27 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
     return btn;
   });
 
-  pauseBtn.addEventListener('click', () => setPaused(!state.paused));
-  el('btn-step').addEventListener('click', () => {
-    state.stepOnce = true;
-  });
-  el('btn-clear').addEventListener('click', clearAll);
-  el('btn-blackhole').addEventListener('click', () => {
-    world.add(blackHole(renderer.centerX, renderer.centerY));
-  });
-  el('btn-recenter').addEventListener('click', () => {
+  const spawnBlackHole = () => {
+    if (world.add(blackHole(renderer.centerX, renderer.centerY))) audio.blackhole();
+  };
+
+  const recentre = () => {
     const target = selected ?? world.heaviest();
     if (target) camera.centerOn(target.x, target.y);
     else camera.reset();
     syncZoomSlider();
+  };
+
+  pauseBtn.addEventListener('click', () => {
+    audio.ui();
+    setPaused(!state.paused);
   });
+  el('btn-step').addEventListener('click', () => {
+    state.stepOnce = true;
+  });
+  el('btn-clear').addEventListener('click', clearAll);
+  el('btn-blackhole').addEventListener('click', spawnBlackHole);
+  el('btn-recenter').addEventListener('click', recentre);
   el('panel-toggle').addEventListener('click', () => {
     document.body.classList.toggle('panel-collapsed');
   });
@@ -249,6 +306,7 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
     const r = Math.hypot(dx, dy);
     if (r < 1e-3) return;
 
+    audio.launch(2);
     const v = circularSpeed(state.gravity, primary.mass + probe.mass, r);
     // Perpendicular to the radius, in the same sense as the primary's spin.
     probe.vx = primary.vx - (dy / r) * v;
@@ -259,6 +317,8 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
   };
 
   stage.addEventListener('pointerdown', (e) => {
+    // Browsers only allow an AudioContext to start from a user gesture.
+    audio.unlock();
     const [sx, sy] = screenPos(e);
     lastScreenX = sx;
     lastScreenY = sy;
@@ -325,16 +385,19 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
     // Drag away from the spawn point to fling in that direction. Dividing by
     // zoom keeps the launch speed tied to world distance, so a drag means the
     // same thing whether you are zoomed in or out.
-    world.add(
+    const vx = (to.x - from.x) * FLING_SCALE * camera.zoom;
+    const vy = (to.y - from.y) * FLING_SCALE * camera.zoom;
+    const added = world.add(
       makeBody({
         x: from.x,
         y: from.y,
-        vx: (to.x - from.x) * FLING_SCALE * camera.zoom,
-        vy: (to.y - from.y) * FLING_SCALE * camera.zoom,
+        vx,
+        vy,
         mass: state.spawnMass,
         color: dragColor,
       }),
     );
+    if (added) audio.launch(Math.hypot(vx, vy));
   };
 
   stage.addEventListener('pointerup', (e) => endDrag(e, true));
@@ -353,52 +416,103 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
     { passive: false },
   );
 
+  /* ------------------------------------------------------- help overlay --- */
+
+  const help = el('help');
+  const helpClose = el('btn-help-close');
+
+  /** Render the overlay from the shortcut registry, so it cannot drift. */
+  function buildHelp(): void {
+    const groups = new Map<string, string[]>();
+    for (const sc of SHORTCUTS) {
+      const row = `<div><span>${sc.label}</span><kbd>${sc.keys.join('</kbd><kbd>')}</kbd></div>`;
+      const list = groups.get(sc.group);
+      if (list) list.push(row);
+      else groups.set(sc.group, [row]);
+    }
+    const pointer = POINTER_HELP.map(
+      (p) => `<div><span>${p.label}</span><kbd>${p.keys.join('</kbd><kbd>')}</kbd></div>`,
+    ).join('');
+
+    el('help-grid').innerHTML =
+      `<section><h3>Mouse</h3>${pointer}</section>` +
+      [...groups]
+        .map(([name, rows]) => `<section><h3>${name}</h3>${rows.join('')}</section>`)
+        .join('');
+  }
+
+  const setHelp = (open: boolean) => {
+    help.classList.toggle('is-open', open);
+    help.setAttribute('aria-hidden', String(!open));
+    if (open) helpClose.focus();
+  };
+  const helpOpen = () => help.classList.contains('is-open');
+
+  buildHelp();
+  helpClose.addEventListener('click', () => setHelp(false));
+  el('btn-help').addEventListener('click', () => {
+    audio.ui();
+    setHelp(!helpOpen());
+  });
+  help.addEventListener('click', (e) => {
+    // Click the backdrop (but not the dialog) to dismiss.
+    if (e.target === help) setHelp(false);
+  });
+
   /* ---------------------------------------------------------- keyboard ---- */
+
+  /** One action per shortcut id — the registry decides which keys reach here. */
+  const actions: Record<ShortcutId, (e: KeyboardEvent) => void> = {
+    pause: () => setPaused(!state.paused),
+    step: () => {
+      if (state.paused) state.stepOnce = true;
+    },
+    clear: () => clearAll(),
+    blackhole: () => spawnBlackHole(),
+    scene: (e) => {
+      const i = Number(e.key) - 1;
+      if (i < PRESETS.length) loadPreset(PRESETS[i].id);
+    },
+    recentre: () => recentre(),
+    orbits: () => setToggleState('show-orbits', (state.showOrbits = !state.showOrbits)),
+    vectors: () => setToggleState('show-vectors', (state.showVectors = !state.showVectors)),
+    predict: () => setToggleState('predict', (state.predict = !state.predict)),
+    follow: () => {
+      if (!selected) return;
+      state.follow = !state.follow;
+      setToggleState('follow', state.follow);
+    },
+    deselect: () => {
+      if (helpOpen()) setHelp(false);
+      else select(null);
+    },
+    mute: () => {
+      audio.setEnabled(!audio.enabled);
+      setToggleState('sound', audio.enabled);
+      audio.ui();
+    },
+    panel: () => document.body.classList.toggle('panel-collapsed'),
+    help: () => setHelp(!helpOpen()),
+  };
+
+  const setToggleState = (id: string, on: boolean) => {
+    el<HTMLInputElement>(id).checked = on;
+  };
 
   window.addEventListener('keydown', (e) => {
     const target = e.target as HTMLElement | null;
     if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 
-    if (e.key >= '1' && e.key <= String(Math.min(9, PRESETS.length))) {
-      loadPreset(PRESETS[Number(e.key) - 1].id);
-      return;
-    }
+    const id = matchShortcut(e);
+    if (!id) return;
 
-    switch (e.key.toLowerCase()) {
-      case ' ':
-        e.preventDefault();
-        setPaused(!state.paused);
-        break;
-      case '.':
-        if (state.paused) state.stepOnce = true;
-        break;
-      case 'c':
-        clearAll();
-        break;
-      case 'b':
-        world.add(blackHole(renderer.centerX, renderer.centerY));
-        break;
-      case 'f':
-        if (selected) {
-          state.follow = !state.follow;
-          followBox.checked = state.follow;
-        }
-        break;
-      case 'o':
-        state.showOrbits = !state.showOrbits;
-        el<HTMLInputElement>('show-orbits').checked = state.showOrbits;
-        break;
-      case 'v':
-        state.showVectors = !state.showVectors;
-        el<HTMLInputElement>('show-vectors').checked = state.showVectors;
-        break;
-      case 'escape':
-        select(null);
-        break;
-      case 'h':
-        document.body.classList.toggle('panel-collapsed');
-        break;
-    }
+    // While the help overlay is up only Escape and ? do anything, so the list
+    // cannot be read and acted on at the same time by accident.
+    if (helpOpen() && id !== 'deselect' && id !== 'help') return;
+
+    if (e.key === ' ' || e.key === '/') e.preventDefault();
+    audio.unlock();
+    actions[id](e);
   });
 
   /* --------------------------------------------------------- inspector ---- */
@@ -452,9 +566,12 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
   const bodiesEl = el('hud-bodies');
   const mergesEl = el('hud-merges');
   const qualityEl = el('hud-quality');
+  const memEl = el('hud-mem');
   const energyEl = el('hud-energy');
   const angularEl = el('hud-angular');
 
+  world.maxBodies = quality.profile.maxBodies;
+  clampSubsteps();
   loadPreset('solar');
   setPaused(false);
   select(null);
@@ -469,6 +586,11 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
 
     validateSelection() {
       if (selected && !world.bodies.includes(selected)) select(null);
+    },
+
+    onQualityChange() {
+      clampSubsteps();
+      qualitySelect.value = quality.mode;
     },
 
     drawOverlay() {
@@ -498,12 +620,14 @@ export function initUI(world: World, renderer: Renderer, camera: Camera): UiHand
       renderer.drawScaleBar();
     },
 
-    updateHud(fps, bodies, merges, degraded) {
+    updateHud(fps, bodies, merges) {
       fpsEl.textContent = String(Math.round(fps));
-      bodiesEl.textContent = `${bodies} / ${PHYSICS.MAX_BODIES}`;
+      bodiesEl.textContent = `${bodies} / ${quality.profile.maxBodies}`;
       mergesEl.textContent = String(merges);
-      qualityEl.textContent = degraded ? 'adaptive' : 'high';
-      qualityEl.classList.toggle('is-warn', degraded);
+      qualityEl.textContent =
+        quality.profile.label + (quality.mode === 'auto' ? ' (auto)' : '');
+      qualityEl.classList.toggle('is-warn', quality.tier !== 'high');
+      memEl.textContent = renderer.spriteMB.toFixed(1) + ' MB';
       syncZoomSlider();
       if (selected) renderInspector();
     },

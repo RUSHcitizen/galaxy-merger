@@ -15,9 +15,12 @@
     <aside id="panel" aria-label="Simulation controls">
       <header class="panel-head">
         <h1>Cosmic <span>Gravity</span></h1>
-        <button id="panel-toggle" class="icon-btn" title="Hide panel (H)" aria-label="Toggle panel">
-          <span></span>
-        </button>
+        <div class="head-actions">
+          <button id="btn-help" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+          <button id="panel-toggle" class="icon-btn" title="Hide panel (H)" aria-label="Toggle panel">
+            <span></span>
+          </button>
+        </div>
       </header>
 
       <div class="panel-body">
@@ -82,6 +85,35 @@
         </section>
 
         <section class="group">
+          <h2 class="group-title">Performance</h2>
+          <div class="control control-row">
+            <label for="quality">Quality</label>
+            <select id="quality">
+              <option value="auto">Auto</option>
+              <option value="high">High</option>
+              <option value="medium">Balanced</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+          <p class="hint-line">
+            Auto starts from what the device reports and then follows measured
+            frame time. Low drops the pixel ratio to 1 and turns off bloom and
+            the starfield — two full-screen passes per frame instead of four.
+          </p>
+        </section>
+
+        <section class="group">
+          <h2 class="group-title">Sound</h2>
+          <div class="toggles">
+            <label class="switch"><input id="sound" type="checkbox" checked /><span>Sound effects</span></label>
+          </div>
+          <div class="control">
+            <label for="volume">Volume <output id="volume-value">35%</output></label>
+            <input id="volume" type="range" min="0" max="1" step="0.01" value="0.35" />
+          </div>
+        </section>
+
+        <section class="group">
           <h2 class="group-title">
             Selection
             <i id="inspector-swatch" class="swatch" aria-hidden="true"></i>
@@ -98,20 +130,28 @@
           <div><span>Merges</span><b id="hud-merges">0</b></div>
           <div><span>Energy</span><b id="hud-energy">–</b></div>
           <div><span>Ang. mom.</span><b id="hud-angular">–</b></div>
+          <div><span>Sprites</span><b id="hud-mem">–</b></div>
         </section>
 
         <footer class="hint">
           <b>Drag</b> to fling · <b>click</b> a body to inspect ·
           <b>shift-click</b> for a circular orbit · <b>right-drag</b> to pan ·
           <b>wheel</b> to zoom
-          <div class="keys">
-            <kbd>Space</kbd> pause <kbd>.</kbd> step <kbd>C</kbd> clear
-            <kbd>B</kbd> black hole <kbd>F</kbd> follow <kbd>O</kbd> orbits
-            <kbd>V</kbd> vectors <kbd>1–6</kbd> scenes <kbd>H</kbd> panel
-          </div>
+          <div class="keys">Press <kbd>?</kbd> for all keyboard shortcuts</div>
         </footer>
       </div>
     </aside>
+
+    <div id="help" class="help" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <div class="help-dialog">
+        <header>
+          <h2>Shortcuts</h2>
+          <button id="btn-help-close" class="icon-btn" aria-label="Close">×</button>
+        </header>
+        <div id="help-grid" class="help-grid"></div>
+        <footer>Press <kbd>?</kbd> or <kbd>Esc</kbd> to close</footer>
+      </div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

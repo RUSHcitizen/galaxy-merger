@@ -53,10 +53,6 @@ export const RENDER = {
   DEGRADE_MS: 21,
   /** Frame-time (ms) below which it climbs back to high quality. */
   RECOVER_MS: 14,
-  /** Bloom buffer resolution as a fraction of the viewport. */
-  BLOOM_SCALE: 0.25,
-  /** Blur radius applied to the (downsampled) bloom buffer, in its own px. */
-  BLOOM_BLUR: 3.5,
   /** Starfield tile size in world px; stars wrap on this grid. */
   STAR_TILE: 1400,
   /** Stars per parallax layer. */

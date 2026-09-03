@@ -135,9 +135,14 @@ export class World {
   mergeCount = 0;
   /** Merge sites since the last drain, for the particle system. */
   readonly mergeEvents: MergeEvent[] = [];
+  /**
+   * Live body cap. Lowered by the quality tier: the force loop is O(n²), so
+   * this is the main lever on CPU cost for a weak machine.
+   */
+  maxBodies: number = PHYSICS.MAX_BODIES;
 
   add(body: Body): Body | null {
-    if (this.bodies.length >= PHYSICS.MAX_BODIES) return null;
+    if (this.bodies.length >= this.maxBodies) return null;
     this.bodies.push(body);
     this.accelDirty = true;
     return body;

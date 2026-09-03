@@ -35,6 +35,7 @@
  */
 
 import { COLORS, RENDER, type SandboxState } from './config';
+import type { QualityProfile } from './quality';
 import type { Camera } from './camera';
 import { hexToRgb, type Body, type Vec2 } from './physics';
 import type { OrbitElements } from './orbits';
@@ -46,6 +47,8 @@ interface Sprite {
   canvas: HTMLCanvasElement;
   /** Sprite half-size in CSS px — the draw offset. */
   half: number;
+  /** Backing-store size, so the cache can be bounded by memory not just count. */
+  bytes: number;
 }
 
 /**
@@ -88,14 +91,17 @@ export class Renderer {
   /** Star positions within one wrapping tile, per parallax layer. */
   private starLayers: Array<{ pts: Float32Array; parallax: number; size: number; alpha: number }> = [];
 
-  /** 1 = full quality, 0 = degraded. Driven by smoothed frame time. */
-  private quality = 1;
-  private smoothedMs = 16;
-
   width = 0;
   height = 0;
 
-  constructor(private canvas: HTMLCanvasElement, private camera: Camera) {
+  /** Total backing-store bytes held by the sprite cache. */
+  private spriteBytes = 0;
+
+  constructor(
+    private canvas: HTMLCanvasElement,
+    private camera: Camera,
+    private profile: QualityProfile,
+  ) {
     this.view = ctx2d(canvas);
     this.ctx = ctx2d(this.trailBuf);
     this.starCtx = ctx2d(this.starBuf);
@@ -108,11 +114,24 @@ export class Renderer {
     this.resize();
   }
 
+  /**
+   * Swap quality profile. Forces a full reallocation because the pixel ratio
+   * and the starfield density both change with it.
+   */
+  setProfile(profile: QualityProfile): void {
+    this.profile = profile;
+    this.buildStars();
+    // Defeat the early-out in resize() so the buffers are actually rebuilt.
+    this.dpr = -1;
+    this.resize();
+    this.camera.setZoom(this.camera.zoom);
+  }
+
   /* ------------------------------------------------------------- viewport */
 
   /** Match the backing stores to the CSS size, capped at RENDER.MAX_DPR. */
   resize(): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, RENDER.MAX_DPR);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.profile.dprCap);
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(rect.width));
     const h = Math.max(1, Math.round(rect.height));
@@ -124,19 +143,23 @@ export class Renderer {
     this.dpr = dpr;
     this.camera.setViewport(w, h);
 
-    for (const c of [this.canvas, this.trailBuf, this.starBuf, this.scratch]) {
+    for (const c of [this.canvas, this.trailBuf, this.starBuf]) {
       c.width = Math.round(w * dpr);
       c.height = Math.round(h * dpr);
     }
-    const bw = Math.max(1, Math.round(w * dpr * RENDER.BLOOM_SCALE));
-    const bh = Math.max(1, Math.round(h * dpr * RENDER.BLOOM_SCALE));
+    // The pan scratch buffer is another full-screen surface; leave it
+    // unallocated until the camera actually moves.
+    this.scratch.width = 0;
+    this.scratch.height = 0;
+    const bw = Math.max(1, Math.round(w * dpr * this.profile.bloomScale));
+    const bh = Math.max(1, Math.round(h * dpr * this.profile.bloomScale));
     this.bloomA.width = bw;
     this.bloomA.height = bh;
     this.bloomB.width = bw;
     this.bloomB.height = bh;
 
     // Draw in CSS pixels; the transform handles the scale-up.
-    for (const c of [this.view, this.ctx, this.starCtx, this.scratchCtx]) {
+    for (const c of [this.view, this.ctx, this.starCtx]) {
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     // The bloom buffers work in their own (already reduced) pixel space.
@@ -144,7 +167,16 @@ export class Renderer {
     this.bloomBCtx.setTransform(1, 0, 0, 1, 0, 0);
 
     // Sprites are rasterised at the current DPR, so they must be rebuilt.
+    this.dropSprites();
+  }
+
+  private dropSprites(): void {
+    for (const s of this.sprites.values()) {
+      s.canvas.width = 0;
+      s.canvas.height = 0;
+    }
     this.sprites.clear();
+    this.spriteBytes = 0;
   }
 
   get centerX(): number {
@@ -161,21 +193,6 @@ export class Renderer {
     this.view.clearRect(0, 0, this.width, this.height);
   }
 
-  /** Feed real frame time in ms so quality can adapt. */
-  reportFrameTime(ms: number): void {
-    this.smoothedMs += (ms - this.smoothedMs) * 0.08;
-    if (this.quality === 1 && this.smoothedMs > RENDER.DEGRADE_MS) this.quality = 0;
-    else if (this.quality === 0 && this.smoothedMs < RENDER.RECOVER_MS) this.quality = 1;
-  }
-
-  get fps(): number {
-    return this.smoothedMs > 0 ? 1000 / this.smoothedMs : 0;
-  }
-
-  get degraded(): boolean {
-    return this.quality === 0;
-  }
-
   /* ------------------------------------------------------------ starfield */
 
   private buildStars(): void {
@@ -188,10 +205,11 @@ export class Renderer {
       return { pts, parallax, size, alpha };
     };
     // Three depths: the slowest layer reads as furthest away.
+    const n = this.profile.starsPerLayer;
     this.starLayers = [
-      mk(RENDER.STARS_PER_LAYER, 0.12, 1.0, 0.34),
-      mk(Math.round(RENDER.STARS_PER_LAYER * 0.7), 0.26, 1.5, 0.5),
-      mk(Math.round(RENDER.STARS_PER_LAYER * 0.35), 0.45, 2.1, 0.72),
+      mk(n, 0.12, 1.0, 0.34),
+      mk(Math.round(n * 0.7), 0.26, 1.5, 0.5),
+      mk(Math.round(n * 0.35), 0.45, 2.1, 0.72),
     ];
   }
 
@@ -201,6 +219,7 @@ export class Renderer {
    * Only called when the camera actually moved.
    */
   private drawStars(enabled: boolean): void {
+    enabled = enabled && this.profile.stars;
     const ctx = this.starCtx;
     ctx.clearRect(0, 0, this.width, this.height);
     if (!enabled) return;
@@ -276,6 +295,11 @@ export class Renderer {
     const dy = cam.panScreenY;
     if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
 
+    if (this.scratch.width !== this.trailBuf.width || this.scratch.height !== this.trailBuf.height) {
+      this.scratch.width = this.trailBuf.width;
+      this.scratch.height = this.trailBuf.height;
+      this.scratchCtx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    }
     this.scratchCtx.clearRect(0, 0, this.width, this.height);
     this.scratchCtx.drawImage(this.trailBuf, 0, 0, this.width, this.height);
     this.ctx.clearRect(0, 0, this.width, this.height);
@@ -312,11 +336,11 @@ export class Renderer {
     if (this.spritesThisFrame >= RENDER.SPRITE_BUDGET) return null;
     this.spritesThisFrame++;
 
-    while (this.sprites.size >= RENDER.SPRITE_CACHE_LIMIT) {
-      const oldest = this.sprites.keys().next().value;
-      if (oldest === undefined) break;
-      this.sprites.delete(oldest);
-    }
+    // Evict by *bytes* as well as by count. A single sprite for a large merged
+    // body can be several megabytes of backing store, so a count-only limit
+    // would happily hold hundreds of megabytes — fine on a workstation, fatal
+    // on a Chromebook.
+    this.evict(0);
 
     const r = bucket;
     const glow = Math.min(RENDER.MAX_SPRITE_RADIUS, r * RENDER.GLOW_MULT);
@@ -343,9 +367,38 @@ export class Renderer {
     g.fillStyle = grad;
     g.fillRect(0, 0, size, size);
 
-    const sprite: Sprite = { canvas: c, half };
+    const bytes = c.width * c.height * 4;
+    const sprite: Sprite = { canvas: c, half, bytes };
     this.sprites.set(key, sprite);
+    this.spriteBytes += bytes;
+    this.evict(bytes);
     return sprite;
+  }
+
+  /** Drop least-recently-used sprites until both budgets are satisfied. */
+  private evict(keepBytes: number): void {
+    const maxBytes = this.profile.spriteBudgetBytes;
+    while (
+      this.sprites.size > RENDER.SPRITE_CACHE_LIMIT ||
+      (this.spriteBytes > maxBytes && this.spriteBytes > keepBytes)
+    ) {
+      const oldestKey = this.sprites.keys().next().value;
+      if (oldestKey === undefined) break;
+      const victim = this.sprites.get(oldestKey);
+      if (!victim) break;
+      // Never evict the sprite we are about to return.
+      if (this.sprites.size === 1 && victim.bytes === keepBytes) break;
+      this.sprites.delete(oldestKey);
+      this.spriteBytes -= victim.bytes;
+      // Release the backing store eagerly rather than waiting for GC.
+      victim.canvas.width = 0;
+      victim.canvas.height = 0;
+    }
+  }
+
+  /** Sprite cache size in MB, for the HUD. */
+  get spriteMB(): number {
+    return this.spriteBytes / (1 << 20);
   }
 
   /* ----------------------------------------------------------------- scene */
@@ -365,7 +418,6 @@ export class Renderer {
     this.spritesThisFrame = 0;
     this.fade(state.trail);
 
-    const lowQ = this.quality === 0;
     // Additive blending is what makes overlapping glows read as light.
     ctx.globalCompositeOperation = state.glow ? 'lighter' : 'source-over';
 
@@ -381,9 +433,12 @@ export class Renderer {
       const pad = r * RENDER.GLOW_MULT + 4;
       if (x < -pad || y < -pad || x > this.width + pad || y > this.height + pad) continue;
 
-      const s = state.glow && !(lowQ && r < 2.5) ? this.sprite(b.color, r) : null;
+      // Below the profile's threshold a glow sprite is not worth its cost, and
+      // at this size a plain disc is nearly indistinguishable anyway.
+      const wantGlow = state.glow && r >= this.profile.discBelow;
+      const s = wantGlow ? this.sprite(b.color, r) : null;
       if (s) {
-        const scale = lowQ ? 0.6 : 1;
+        const scale = this.profile.glowScale;
         const size = s.half * 2 * scale;
         ctx.drawImage(s.canvas, x - s.half * scale, y - s.half * scale, size, size);
       } else {
@@ -499,7 +554,7 @@ export class Renderer {
    * Returns the buffer to composite, or null when bloom is off.
    */
   private buildBloom(state: SandboxState): HTMLCanvasElement | null {
-    if (state.bloom <= 0.001 || this.degraded) return null;
+    if (state.bloom <= 0.001 || !this.profile.bloom) return null;
 
     const bw = this.bloomA.width;
     const bh = this.bloomA.height;
@@ -536,7 +591,7 @@ export class Renderer {
     //    would cost ~16x more for an identical-looking result, since the
     //    source has already lost that detail.
     a.clearRect(0, 0, bw, bh);
-    a.filter = `blur(${RENDER.BLOOM_BLUR}px)`;
+    a.filter = `blur(${this.profile.bloomBlur}px)`;
     a.drawImage(this.bloomB, 0, 0);
     a.filter = 'none';
     return this.bloomA;
@@ -550,10 +605,16 @@ export class Renderer {
    */
   private composite(state: SandboxState, bloom: HTMLCanvasElement | null): void {
     const v = this.view;
-    v.clearRect(0, 0, this.width, this.height);
+    const stars = state.stars && this.profile.stars;
 
-    if (state.stars) v.drawImage(this.starBuf, 0, 0, this.width, this.height);
-    v.drawImage(this.trailBuf, 0, 0, this.width, this.height);
+    // 'copy' replaces the destination outright, folding the clear into the
+    // first blit. On integrated graphics every full-screen pass saved is worth
+    // having: at the low tier this frame is two passes instead of four.
+    v.globalCompositeOperation = 'copy';
+    v.drawImage(stars ? this.starBuf : this.trailBuf, 0, 0, this.width, this.height);
+    v.globalCompositeOperation = 'source-over';
+
+    if (stars) v.drawImage(this.trailBuf, 0, 0, this.width, this.height);
 
     if (bloom) {
       v.globalCompositeOperation = 'lighter';

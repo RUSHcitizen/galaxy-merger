@@ -46,9 +46,28 @@ reject as an unrecognised Host header.
 | **Right / middle drag** | Pan the camera |
 | **Wheel** | Zoom about the cursor |
 
-`Space` pause · `.` single step · `C` clear · `B` black hole · `F` follow
-selection · `O` orbit ellipse · `V` velocity vectors · `1`–`6` scenes · `Esc`
-deselect · `H` hide panel.
+Press `?` in the app for the full keyboard list. It is generated from
+`src/shortcuts.ts`, the same registry the key handler dispatches from, so a
+shortcut cannot end up documented but unhandled (or the reverse).
+
+`Space` pause · `.` single step · `C` clear · `B` black hole · `R` recentre ·
+`F` follow · `O` orbit ellipse · `V` velocity vectors · `T` trajectory preview ·
+`M` mute · `1`–`6` scenes · `Esc` deselect · `H` hide panel · `?` shortcuts.
+
+## Sound
+
+Effects are synthesized with the Web Audio API — oscillators and one shared
+noise buffer — so the project still ships zero audio assets and works offline.
+Collisions thud with a pitch set by the mass involved, flings sweep, black holes
+drop a sub-bass swell, and the UI ticks.
+
+Two constraints shape the implementation. Browsers refuse to start an
+`AudioContext` before a user gesture, so it is created lazily on the first real
+interaction rather than at load. And merges are not rare — an accretion disc can
+produce dozens in a single frame — so every sound passes a voice cap and a
+per-kind minimum interval, and the loop aggregates a frame's merges into one
+call. Measured under a heavy merge storm that holds voice creation to ~10/s.
+Mute state and volume persist in `localStorage`.
 
 ## Scenes
 
@@ -72,7 +91,10 @@ deselect · `H` hide panel.
 | `src/renderer.ts` | Persistence trails, glow sprites, bloom, starfield, overlays |
 | `src/particles.ts` | Merge debris sparks |
 | `src/presets.ts` | The six scenes |
-| `src/ui.ts` | Controls, pointer grammar, inspector |
+| `src/audio.ts` | Synthesized sound effects, voice capping, rate limiting |
+| `src/quality.ts` | Quality tiers and the frame-time watcher |
+| `src/shortcuts.ts` | The keyboard registry both the handler and overlay read |
+| `src/ui.ts` | Controls, pointer grammar, inspector, help overlay |
 | `src/main.ts` | Bootstrap and the animation loop |
 
 ## The physics
@@ -180,6 +202,49 @@ Measured physics cost per step (one force evaluation, no merging):
 At the default 2 substeps a 250-body scene spends well under 1ms per frame on
 physics, leaving essentially the whole budget for drawing. `PHYSICS.MAX_BODIES`
 caps the world at 900; near that ceiling, drop substeps to 1.
+
+## Running on low-end hardware
+
+The sandbox targets a 2017 MacBook Pro *and* a low-end Chromebook with DDR3
+memory and integrated graphics — roughly an order of magnitude apart in fill
+rate. Three quality tiers cover that range, selectable in the panel or left on
+**Auto**, which starts from what the browser reports (`deviceMemory`,
+`hardwareConcurrency`) and then follows measured frame time.
+
+| | High | Balanced | Low |
+| --- | --- | --- | --- |
+| Pixel ratio cap | 2 | 1.5 | 1 |
+| Bloom | full | cheap | off |
+| Starfield | on | on | off |
+| Body cap | 900 | 500 | 260 |
+| Substep ceiling | 6 | 4 | 2 |
+| Sprite cache budget | 48 MB | 24 MB | 10 MB |
+
+Measured on a simulated Chromebook panel (1366×768 at DPR 1, dense 400-body
+scene), the Low tier renders in **5.2ms against High's 17.8ms — 3.4× faster**.
+Handed a deliberately overloaded window, Auto stepped High → Balanced → Low on
+its own and took the frame rate from 12fps to 38fps, then settled without
+oscillating.
+
+What actually costs what, measured rather than assumed:
+
+- **Bloom is ~60% of the frame** (10ms of 16.5ms at DPR 1). The starfield is
+  0.4ms and glow sprites 1.2ms. Shrinking the bloom buffer barely helps because
+  the cost is dominated by the full-screen additive upscale, not the blur — so
+  the Low tier turns bloom off outright rather than pretending to make it cheap.
+- **Pixel ratio is quadratic.** It does nothing on a 1×-DPR Chromebook panel,
+  which is exactly why the tiers need levers that are not the pixel ratio.
+- **A plain disc is 40–200× cheaper than a glow sprite**, because a glow covers
+  (3.6r)² — about 52× the body's own area. Below ~3px the halo is barely
+  perceptible, so the lower tiers draw small bodies as discs.
+
+Memory is bounded rather than merely bounded-by-count. The glow sprite cache
+evicts on a **byte** budget as well as an entry count: one sprite for a large
+merged body can be several megabytes of backing store, so a count-only limit
+would happily hold hundreds of megabytes. Evicted canvases are shrunk to 0×0 to
+release their backing store immediately. The pan scratch buffer — another
+full-screen surface — is not allocated until the camera actually moves. Live
+sprite usage is shown in the HUD.
 
 ### Known trade-offs
 
