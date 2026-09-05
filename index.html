@@ -68,8 +68,8 @@
         <section class="group">
           <h2 class="group-title">View</h2>
           <div class="control">
-            <label for="zoom">Zoom <output id="zoom-value">1.00×</output></label>
-            <input id="zoom" type="range" min="0.08" max="8" step="0.01" value="1" />
+            <label for="zoom">Camera distance <output id="zoom-value">1,400 u</output></label>
+            <input id="zoom" type="range" min="4.5" max="10.3" step="0.01" value="7.24" />
           </div>
           <div class="control">
             <label for="trail">Trail length <output id="trail-value">55%</output></label>
@@ -82,6 +82,8 @@
           <div class="toggles">
             <label class="switch"><input id="glow" type="checkbox" checked /><span>Neon glow</span></label>
             <label class="switch"><input id="stars" type="checkbox" checked /><span>Starfield</span></label>
+            <label class="switch"><input id="grid" type="checkbox" checked /><span>Reference grid</span></label>
+            <label class="switch"><input id="shading" type="checkbox" checked /><span>Lit spheres</span></label>
             <label class="switch"><input id="show-orbits" type="checkbox" checked /><span>Orbit ellipse</span></label>
             <label class="switch"><input id="predict" type="checkbox" checked /><span>Trajectory preview</span></label>
             <label class="switch"><input id="show-vectors" type="checkbox" /><span>Velocity vectors</span></label>
@@ -150,8 +152,8 @@
 
         <footer class="hint">
           <b>Drag</b> to fling · <b>click</b> a body to inspect ·
-          <b>shift-click</b> for a circular orbit · <b>right-drag</b> to pan ·
-          <b>wheel</b> to zoom
+          <b>shift-click</b> for a circular orbit · <b>right-drag</b> to orbit
+          the camera · <b>shift-right-drag</b> to pan · <b>wheel</b> to zoom
           <div class="keys">Press <kbd>?</kbd> for all keyboard shortcuts</div>
         </footer>
       </div>

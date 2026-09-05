@@ -14,7 +14,7 @@
  */
 
 import { COLORS, PHYSICS, randomColor } from './config';
-import { makeBody, type Body, type World } from './physics';
+import { makeBody, V, type Body, type Vec3, type World } from './physics';
 import { circularSpeed, dominantAttractor, elementsFor } from './orbits';
 
 export type ChallengeState = 'pending' | 'success' | 'failed';
@@ -43,8 +43,8 @@ export interface Challenge {
   hint: string;
   /** Seconds before the attempt fails. */
   timeLimit: number;
-  /** Camera zoom that frames the scene. */
-  zoom: number;
+  /** Camera distance that frames the scene. */
+  distance: number;
   build(G: number): Body[];
   /** Called once per frame. Returning anything but 'pending' ends the run. */
   check(ctx: ChallengeCtx): ChallengeState;
@@ -105,7 +105,7 @@ const firstOrbit: Challenge = {
   brief: 'Fling a body into a closed orbit and keep it there for 10 seconds.',
   hint: 'Aim sideways, not at the star. The dashed preview shows where it goes.',
   timeLimit: 120,
-  zoom: 1,
+  distance: 1900,
   build: () => [star()],
   check(ctx) {
     const held = holdTime(ctx, (b) => {
@@ -124,7 +124,7 @@ const circularize: Challenge = {
   brief: 'Get a body onto a near-circular orbit — eccentricity under 0.08 — and hold it for 8 seconds.',
   hint: 'Shift-click drops a body onto an exactly circular orbit. Doing it by hand is the real challenge.',
   timeLimit: 150,
-  zoom: 1,
+  distance: 1900,
   build: () => [star()],
   check(ctx) {
     const held = holdTime(ctx, (b) => {
@@ -143,7 +143,7 @@ const threadTheNeedle: Challenge = {
   brief: 'Park a body in the gap between the two planets — and leave both planets in one piece.',
   hint: 'The lane is roughly 170 to 310 units out. Keep the whole orbit inside it, not just this moment.',
   timeLimit: 180,
-  zoom: 0.95,
+  distance: 1900,
   build(G) {
     const s = star();
     return [
@@ -178,7 +178,7 @@ const slingshot: Challenge = {
   brief: 'Escape the system — but only by stealing momentum from the giant. A straight burn out does not count.',
   hint: 'Pass close behind the giant in its direction of travel. It drags you forward.',
   timeLimit: 180,
-  zoom: 0.8,
+  distance: 2200,
   build(G) {
     const s = star(20000);
     return [s, orbiter(s, 300, 0.4, 2600, '#ffb27a', G)];
@@ -201,7 +201,7 @@ const slingshot: Challenge = {
        * accept a straight burn out through the giant's neighbourhood, which
        * gains nothing from it.
        */
-      const d = Math.hypot(b.x - giant.x, b.y - giant.y);
+      const d = Math.hypot(b.x - giant.x, b.y - giant.y, b.z - giant.z);
       if (d < reach && e.bound) ctx.memory.set('assist:' + b.id, 1);
 
       if (!ctx.memory.has('assist:' + b.id)) continue;
@@ -232,7 +232,7 @@ const trojanParking: Challenge = {
   brief: 'Park a body at L4 — 60° ahead of the planet on its own orbit — and keep it there for 12 seconds.',
   hint: 'L4 is marked. It only holds still in the rotating frame: press G once something is selected.',
   timeLimit: 210,
-  zoom: 0.85,
+  distance: 1800,
   build(G) {
     const s = star(40000);
     return [s, orbiter(s, 320, 0, 420, '#ffb27a', G)];
@@ -240,7 +240,7 @@ const trojanParking: Challenge = {
   check(ctx) {
     const l4 = lagrangeL4(ctx.world);
     if (!l4) return 'failed';
-    const held = holdTime(ctx, (b) => Math.hypot(b.x - l4.x, b.y - l4.y) < 60);
+    const held = holdTime(ctx, (b) => Math.hypot(b.x - l4.x, b.y - l4.y, b.z - l4.z) < 60);
     if (held >= 12) return 'success';
     return ctx.elapsed > this.timeLimit ? 'failed' : 'pending';
   },
@@ -256,10 +256,10 @@ const feedTheHole: Challenge = {
   brief: 'Feed the void three rocks\u2019 worth of mass before the clock runs out.',
   hint: 'Fling something heavy into a rock to rob it of speed — slow it enough and its orbit drops inside the horizon.',
   timeLimit: 90,
-  zoom: 0.55,
+  distance: 2600,
   build(G) {
     const hole = makeBody({
-      x: 0, y: 0, mass: PHYSICS.BLACK_HOLE_MASS,
+      x: 0, y: 0, z: 0, mass: PHYSICS.BLACK_HOLE_MASS,
       color: COLORS.blackHole, kind: 'blackhole',
     });
     const bodies = [hole];
@@ -288,8 +288,8 @@ const feedTheHole: Challenge = {
       const v = circularSpeed(G, PHYSICS.BLACK_HOLE_MASS, r);
       bodies.push(
         makeBody({
-          x: ux * r, y: uy * r,
-          vx: -uy * v, vy: ux * v,
+          x: ux * r, y: uy * r, z: 0,
+          vx: -uy * v, vy: ux * v, vz: 0,
           mass: ROCK_MASS, color: randomColor(),
         }),
       );
@@ -317,7 +317,7 @@ export const CHALLENGES: Challenge[] = [
  * The L4 point of the heaviest satellite: 60° ahead of it, on its own orbit,
  * measured from the primary. Exported so the renderer can mark it.
  */
-export function lagrangeL4(world: World): { x: number; y: number } | null {
+export function lagrangeL4(world: World): Vec3 | null {
   const primary = world.bodies.find((b) => b.kind === 'star');
   if (!primary) return null;
   let secondary: Body | null = null;
@@ -327,11 +327,32 @@ export function lagrangeL4(world: World): { x: number; y: number } | null {
   }
   if (!secondary) return null;
 
-  const dx = secondary.x - primary.x;
-  const dy = secondary.y - primary.y;
-  const a = Math.atan2(dy, dx) + Math.PI / 3;
-  const r = Math.hypot(dx, dy);
-  return { x: primary.x + Math.cos(a) * r, y: primary.y + Math.sin(a) * r };
+  // L4 sits 60° ahead of the secondary *in its own orbit plane*, so the
+  // rotation is about the orbit normal r × v rather than about the z axis.
+  const r: Vec3 = {
+    x: secondary.x - primary.x,
+    y: secondary.y - primary.y,
+    z: secondary.z - primary.z,
+  };
+  const rel: Vec3 = {
+    x: secondary.vx - primary.vx,
+    y: secondary.vy - primary.vy,
+    z: secondary.vz - primary.vz,
+  };
+  const w = V.norm(V.cross(r, rel));
+  if (V.lenSq(w) < 0.5) return null;
+
+  // Rodrigues rotation of r about w by +60°.
+  const a = Math.PI / 3;
+  const c = Math.cos(a);
+  const sn = Math.sin(a);
+  const cross = V.cross(w, r);
+  const dotp = V.dot(w, r) * (1 - c);
+  return {
+    x: primary.x + r.x * c + cross.x * sn + w.x * dotp,
+    y: primary.y + r.y * c + cross.y * sn + w.y * dotp,
+    z: primary.z + r.z * c + cross.z * sn + w.z * dotp,
+  };
 }
 
 /* ------------------------------------------------------------------ runner */

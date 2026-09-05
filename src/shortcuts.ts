@@ -19,6 +19,7 @@ export type ShortcutId =
   | 'mute'
   | 'rotframe'
   | 'delete'
+  | 'topdown'
   | 'deselect'
   | 'panel'
   | 'help'
@@ -37,13 +38,14 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'step', keys: ['.'], label: 'Advance one frame (while paused)', group: 'Simulation' },
   { id: 'clear', keys: ['C'], label: 'Clear all bodies', group: 'Simulation' },
   { id: 'blackhole', keys: ['B'], label: 'Spawn a black hole at centre', group: 'Simulation' },
-  { id: 'scene', keys: ['1 – 6'], label: 'Load scene 1 to 6', group: 'Simulation' },
+  { id: 'scene', keys: ['2 – 8'], label: 'Load scene 1 to 7', group: 'Simulation' },
 
   { id: 'recentre', keys: ['R'], label: 'Recentre the view', group: 'View' },
   { id: 'orbits', keys: ['O'], label: 'Toggle orbit ellipse', group: 'View' },
   { id: 'vectors', keys: ['V'], label: 'Toggle velocity vectors', group: 'View' },
   { id: 'predict', keys: ['T'], label: 'Toggle trajectory preview', group: 'View' },
   { id: 'rotframe', keys: ['G'], label: 'Rotating reference frame', group: 'View' },
+  { id: 'topdown', keys: ['1'], label: 'Snap to a top-down view', group: 'View' },
 
   { id: 'follow', keys: ['F'], label: 'Follow the selected body', group: 'Selection' },
   { id: 'delete', keys: ['Del'], label: 'Delete the selected body', group: 'Selection' },
@@ -59,8 +61,9 @@ export const POINTER_HELP: Array<{ keys: string[]; label: string }> = [
   { keys: ['Drag'], label: 'Fling a new body along the drag vector' },
   { keys: ['Click'], label: 'Select a body and read its orbit' },
   { keys: ['Shift', 'Click'], label: 'Insert a body on a circular orbit' },
-  { keys: ['Right drag'], label: 'Pan the camera' },
-  { keys: ['Wheel'], label: 'Zoom about the cursor' },
+  { keys: ['Right drag'], label: 'Orbit the camera around the target' },
+  { keys: ['Shift', 'Right drag'], label: 'Pan the camera target' },
+  { keys: ['Wheel'], label: 'Move the camera closer or further' },
 ];
 
 /**
@@ -70,7 +73,8 @@ export const POINTER_HELP: Array<{ keys: string[]; label: string }> = [
 export function matchShortcut(e: KeyboardEvent): ShortcutId | null {
   if (e.metaKey || e.ctrlKey || e.altKey) return null;
 
-  if (e.key >= '1' && e.key <= '9') return 'scene';
+  if (e.key === '1') return 'topdown';
+  if (e.key >= '2' && e.key <= '9') return 'scene';
 
   switch (e.key) {
     case ' ':

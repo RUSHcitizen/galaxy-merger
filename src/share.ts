@@ -11,7 +11,7 @@ import type { BodyKind } from './config';
 import { makeBody, type Body, type World } from './physics';
 
 /** Bump when the field layout changes, so old links fail cleanly. */
-const VERSION = 1;
+const VERSION = 2;
 const KINDS: BodyKind[] = ['body', 'star', 'blackhole'];
 
 /** Round to `d` decimals without trailing zeros. */
@@ -19,25 +19,27 @@ function num(v: number, d: number): string {
   return String(Number(v.toFixed(d)));
 }
 
-export function encodeWorld(world: World, zoom: number): string {
+export function encodeWorld(world: World, distance: number): string {
   const rows = world.bodies.map((b) =>
     [
       num(b.x, 2),
       num(b.y, 2),
+      num(b.z, 2),
       num(b.vx, 4),
       num(b.vy, 4),
+      num(b.vz, 4),
       num(b.mass, 3),
       b.color.replace('#', ''),
       KINDS.indexOf(b.kind),
     ].join(','),
   );
-  const payload = [VERSION, num(zoom, 3), ...rows].join(';');
+  const payload = [VERSION, num(distance, 2), ...rows].join(';');
   return base64UrlEncode(payload);
 }
 
 export interface DecodedWorld {
   bodies: Body[];
-  zoom: number;
+  distance: number;
 }
 
 /** Returns null for anything malformed — a bad link must not break the app. */
@@ -47,22 +49,22 @@ export function decodeWorld(encoded: string): DecodedWorld | null {
     if (parts.length < 2) return null;
     if (Number(parts[0]) !== VERSION) return null;
 
-    const zoom = Number(parts[1]);
-    if (!isFinite(zoom) || zoom <= 0) return null;
+    const distance = Number(parts[1]);
+    if (!isFinite(distance) || distance <= 0) return null;
 
     const bodies: Body[] = [];
     for (let i = 2; i < parts.length; i++) {
       const f = parts[i].split(',');
-      if (f.length !== 7) return null;
-      const [x, y, vx, vy, mass] = f.slice(0, 5).map(Number);
-      if (![x, y, vx, vy, mass].every(isFinite) || mass <= 0) return null;
-      const kind = KINDS[Number(f[6])];
+      if (f.length !== 9) return null;
+      const [x, y, z, vx, vy, vz, mass] = f.slice(0, 7).map(Number);
+      if (![x, y, z, vx, vy, vz, mass].every(isFinite) || mass <= 0) return null;
+      const kind = KINDS[Number(f[8])];
       if (!kind) return null;
-      if (!/^[0-9a-fA-F]{6}$/.test(f[5])) return null;
+      if (!/^[0-9a-fA-F]{6}$/.test(f[7])) return null;
 
-      bodies.push(makeBody({ x, y, vx, vy, mass, color: '#' + f[5], kind }));
+      bodies.push(makeBody({ x, y, z, vx, vy, vz, mass, color: '#' + f[7], kind }));
     }
-    return { bodies, zoom };
+    return { bodies, distance };
   } catch {
     return null;
   }

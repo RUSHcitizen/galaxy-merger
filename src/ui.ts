@@ -19,7 +19,7 @@ import {
   state,
 } from './config';
 import type { Camera } from './camera';
-import { makeBody, radiusForMass, World, type Body, type Diagnostics } from './physics';
+import { makeBody, radiusForMass, V, World, type Body, type Diagnostics, type Vec3 } from './physics';
 import {
   circularSpeed,
   dominantAttractor,
@@ -134,16 +134,22 @@ export function initUI(
   bindSlider('spawn-mass', (v) => fmt(v, 0), (v) => (state.spawnMass = v));
   bindSlider('substeps', (v) => String(Math.round(v)), (v) => (state.substeps = Math.round(v)));
 
+  /*
+   * The zoom control is a camera *distance* now, on a log scale: the useful
+   * range spans two and a half decades, and a linear slider would spend most of
+   * its travel in the far field where nothing changes visibly.
+   */
   const zoomSlider = bindSlider(
     'zoom',
-    (v) => v.toFixed(2) + '×',
+    (v) => Math.round(Math.exp(v)).toLocaleString() + ' u',
     (v) => {
-      if (Math.abs(v - camera.zoom) > 1e-4) camera.setZoom(v);
+      const d = Math.exp(v);
+      if (Math.abs(d - camera.distance) > 0.5) camera.setDistance(d);
     },
   );
   const syncZoomSlider = () => {
-    zoomSlider.value = String(camera.zoom);
-    el('zoom-value').textContent = camera.zoom.toFixed(2) + '×';
+    zoomSlider.value = String(Math.log(camera.distance));
+    el('zoom-value').textContent = Math.round(camera.distance).toLocaleString() + ' u';
   };
 
   bindToggle('glow', () => state.glow, (v) => {
@@ -152,8 +158,13 @@ export function initUI(
   });
   bindToggle('stars', () => state.stars, (v) => {
     state.stars = v;
-    camera.setZoom(camera.zoom); // force a starfield redraw
+    camera.centerOn(camera.target.x, camera.target.y, camera.target.z); // redraw backdrop
   });
+  bindToggle('grid', () => state.grid, (v) => {
+    state.grid = v;
+    camera.centerOn(camera.target.x, camera.target.y, camera.target.z);
+  });
+  bindToggle('shading', () => state.shading, (v) => (state.shading = v));
   bindToggle('show-vectors', () => state.showVectors, (v) => (state.showVectors = v));
   bindToggle('merging', () => state.merging, (v) => (state.merging = v));
   bindToggle('show-orbits', () => state.showOrbits, (v) => (state.showOrbits = v));
@@ -238,7 +249,7 @@ export function initUI(
     updateBanner();
     clearAll();
     camera.reset();
-    camera.setZoom(preset.zoom);
+    camera.setDistance(preset.distance);
     syncZoomSlider();
     world.addAll(preset.build(0, 0, state.gravity));
     el('preset-hint').textContent = preset.hint;
@@ -271,13 +282,13 @@ export function initUI(
   const setRotatingFrame = (on: boolean) => {
     state.rotatingFrame = on && !!selected;
     el<HTMLInputElement>('rotating').checked = state.rotatingFrame;
-    if (!state.rotatingFrame) camera.setRotation(0);
+    if (!state.rotatingFrame) camera.setRotation(0, { x: 0, y: 0, z: 1 });
     renderer.clearAll();
   };
 
   const recentre = () => {
     const target = selected ?? world.heaviest();
-    if (target) camera.centerOn(target.x, target.y);
+    if (target) camera.centerOn(target.x, target.y, target.z);
     else camera.reset();
     syncZoomSlider();
   };
@@ -302,7 +313,7 @@ export function initUI(
   };
 
   const shareLink = async () => {
-    const hash = encodeWorld(world, camera.zoom);
+    const hash = encodeWorld(world, camera.distance);
     const url = `${location.origin}${location.pathname}#w=${hash}`;
     history.replaceState(null, '', `#w=${hash}`);
     let ok = false;
@@ -334,15 +345,18 @@ export function initUI(
   let pointerId = -1;
   let dragged = false;
   /** Drag endpoints in world space. */
-  const from = { x: 0, y: 0 };
-  const to = { x: 0, y: 0 };
+  const from: Vec3 = { x: 0, y: 0, z: 0 };
+  const to: Vec3 = { x: 0, y: 0, z: 0 };
   /** Last pointer position in screen space, for panning. */
   let lastScreenX = 0;
   let lastScreenY = 0;
   let dragColor: string = COLORS.ghost;
 
-  const pathBuffer = new Float32Array(PREDICT.STEPS * 2);
+  const pathBuffer = new Float32Array(PREDICT.STEPS * 3);
   let pathCount = 0;
+
+  /** Ray-pick slack, as a fraction of distance: keeps small bodies clickable. */
+  const PICK_SLACK = 0.012;
 
   const screenPos = (e: PointerEvent): [number, number] => {
     const rect = stage.getBoundingClientRect();
@@ -353,28 +367,57 @@ export function initUI(
    * Insert a body on a circular orbit about whatever is pulling hardest at that
    * point — the quickest way to build a stable system by hand.
    */
-  const insertOrbiter = (wx: number, wy: number) => {
+  const insertOrbiter = (w: Vec3) => {
     const probe = makeBody({
-      x: wx, y: wy, mass: state.spawnMass, color: randomColor(), origin: 'player',
+      x: w.x, y: w.y, z: w.z,
+      mass: state.spawnMass, color: randomColor(), origin: 'player',
     });
     const primary = dominantAttractor(world.bodies, probe, state.gravity);
     if (!primary) {
       if (world.add(probe)) runner.notePlayerBody(probe);
       return;
     }
-    const dx = wx - primary.x;
-    const dy = wy - primary.y;
-    const r = Math.hypot(dx, dy);
+
+    const dx = w.x - primary.x;
+    const dy = w.y - primary.y;
+    const dz = w.z - primary.z;
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (r < 1e-3) return;
 
-    audio.launch(2);
     const v = circularSpeed(state.gravity, primary.mass + probe.mass, r);
-    // Perpendicular to the radius, in the same sense as the primary's spin.
-    probe.vx = primary.vx - (dy / r) * v;
-    probe.vy = primary.vy + (dx / r) * v;
+
+    /*
+     * In three dimensions "perpendicular to the radius" does not name a single
+     * direction — it names a whole plane. Take the component perpendicular to
+     * both the radius and the view ray, which puts the new orbit in the plane
+     * the camera is looking at: a shift-click then produces the circle you can
+     * actually see, rather than one edge-on to you.
+     */
+    const ray = camera.rayDirection(lastScreenX, lastScreenY);
+    let tx = ray.y * dz - ray.z * dy;
+    let ty = ray.z * dx - ray.x * dz;
+    let tz = ray.x * dy - ray.y * dx;
+    let tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    if (tl < 1e-6) {
+      // Radius parallel to the view ray: any perpendicular will do.
+      const perp = V.anyPerp({ x: dx, y: dy, z: dz });
+      tx = perp.x;
+      ty = perp.y;
+      tz = perp.z;
+      tl = 1;
+    }
+
+    probe.vx = primary.vx + (tx / tl) * v;
+    probe.vy = primary.vy + (ty / tl) * v;
+    probe.vz = primary.vz + (tz / tl) * v;
     probe.px = probe.x;
     probe.py = probe.y;
-    if (world.add(probe)) runner.notePlayerBody(probe);
+    probe.pz = probe.z;
+
+    if (world.add(probe)) {
+      runner.notePlayerBody(probe);
+      audio.launch(2);
+    }
   };
 
   stage.addEventListener('pointerdown', (e) => {
@@ -392,16 +435,19 @@ export function initUI(
       stage.classList.add('is-panning');
     } else if (e.button === 0) {
       if (e.shiftKey) {
-        insertOrbiter(camera.worldX(sx, sy), camera.worldY(sx, sy));
+        insertOrbiter(camera.screenToWorld(sx, sy));
         mode = 'none';
         return;
       }
       mode = 'fling';
       dragColor = randomColor();
-      from.x = camera.worldX(sx, sy);
-      from.y = camera.worldY(sx, sy);
-      to.x = from.x;
-      to.y = from.y;
+      const w = camera.screenToWorld(sx, sy);
+      from.x = w.x;
+      from.y = w.y;
+      from.z = w.z;
+      to.x = w.x;
+      to.y = w.y;
+      to.z = w.z;
       pathCount = 0;
     }
     e.preventDefault();
@@ -415,12 +461,17 @@ export function initUI(
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragged = true;
 
     if (mode === 'pan') {
-      camera.panByScreen(dx, dy);
+      // Right-drag swings the camera around the target; holding shift slides
+      // the target instead, which is the other thing you want from a 3D view.
+      if (e.shiftKey) camera.panBy(dx, dy);
+      else camera.orbitBy(-dx * CAMERA.ORBIT_SENSITIVITY, -dy * CAMERA.ORBIT_SENSITIVITY);
       state.follow = false;
       followBox.checked = false;
     } else {
-      to.x = camera.worldX(sx, sy);
-      to.y = camera.worldY(sx, sy);
+      const w = camera.screenToWorld(sx, sy);
+      to.x = w.x;
+      to.y = w.y;
+      to.z = w.z;
     }
     lastScreenX = sx;
     lastScreenY = sy;
@@ -439,21 +490,28 @@ export function initUI(
     if (!dragged) {
       // A click, not a drag: select whatever is under the cursor.
       const [sx, sy] = screenPos(e);
-      select(world.pick(camera.worldX(sx, sy), camera.worldY(sx, sy), 8 / camera.zoom));
+      // Picking is a ray test now: the cursor names a line through the scene,
+      // and the nearest body it passes through wins.
+      const o = camera.rayOrigin();
+      const d = camera.rayDirection(sx, sy);
+      select(world.pickRay(o.x, o.y, o.z, d.x, d.y, d.z, PICK_SLACK));
       return;
     }
 
     // Drag away from the spawn point to fling in that direction. Dividing by
     // zoom keeps the launch speed tied to world distance, so a drag means the
     // same thing whether you are zoomed in or out.
-    const vx = (to.x - from.x) * FLING_SCALE * camera.zoom;
-    const vy = (to.y - from.y) * FLING_SCALE * camera.zoom;
+    const vx = (to.x - from.x) * FLING_SCALE;
+    const vy = (to.y - from.y) * FLING_SCALE;
+    const vz = (to.z - from.z) * FLING_SCALE;
     const added = world.add(
       makeBody({
         x: from.x,
         y: from.y,
+        z: from.z,
         vx,
         vy,
+        vz,
         mass: state.spawnMass,
         color: dragColor,
         origin: 'player',
@@ -461,7 +519,7 @@ export function initUI(
     );
     if (added) {
       runner.notePlayerBody(added);
-      audio.launch(Math.hypot(vx, vy));
+      audio.launch(Math.sqrt(vx * vx + vy * vy + vz * vz));
     }
   };
 
@@ -473,9 +531,8 @@ export function initUI(
     'wheel',
     (e) => {
       e.preventDefault();
-      const rect = stage.getBoundingClientRect();
-      const factor = e.deltaY < 0 ? CAMERA.ZOOM_STEP : 1 / CAMERA.ZOOM_STEP;
-      camera.zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+      const factor = e.deltaY < 0 ? 1 / CAMERA.ZOOM_STEP : CAMERA.ZOOM_STEP;
+      camera.dollyBy(factor);
       syncZoomSlider();
     },
     { passive: false },
@@ -506,7 +563,7 @@ export function initUI(
     audio.scene();
     select(null);
     camera.reset();
-    camera.setZoom(c.zoom);
+    camera.setDistance(c.distance);
     syncZoomSlider();
     runner.start(c, world, state.gravity);
     renderer.clearAll();
@@ -617,8 +674,14 @@ export function initUI(
     clear: () => clearAll(),
     blackhole: () => spawnBlackHole(),
     scene: (e) => {
-      const i = Number(e.key) - 1;
-      if (i < PRESETS.length) loadPreset(PRESETS[i].id);
+      const i = Number(e.key) - 2;
+      if (i >= 0 && i < PRESETS.length) loadPreset(PRESETS[i].id);
+    },
+    topdown: () => {
+      // Straight down the z axis: the old two-dimensional view, handy for
+      // judging a co-planar system without the perspective foreshortening.
+      camera.orbitBy(-camera.yaw, Math.PI / 2 - camera.pitch);
+      audio.ui();
     },
     recentre: () => recentre(),
     orbits: () => setToggleState('show-orbits', (state.showOrbits = !state.showOrbits)),
@@ -693,6 +756,7 @@ export function initUI(
       if (o.bound) {
         rows.push(['Semi-major a', fmt(o.a, 1)]);
         rows.push(['Eccentricity', o.e.toFixed(3)]);
+        rows.push(['Inclination', ((o.inclination * 180) / Math.PI).toFixed(1) + '°']);
         rows.push(['Periapsis', fmt(o.periapsis, 1)]);
         rows.push(['Apoapsis', fmt(o.apoapsis, 1)]);
         rows.push(['Period', fmt(o.period, 0) + ' t']);
@@ -765,9 +829,21 @@ export function initUI(
       // direction on screen and freezes the Lagrange points with it.
       if (state.rotatingFrame && selected) {
         const primary = dominantAttractor(world.bodies, selected, state.gravity);
-        if (primary) {
-          camera.setRotation(-Math.atan2(selected.y - primary.y, selected.x - primary.x));
-          camera.centerOn(primary.x, primary.y);
+        const el2 = primary ? elementsFor(selected, primary, state.gravity) : null;
+        if (primary && el2) {
+          /*
+           * Co-rotate about the *orbit normal*, not the z axis: an inclined
+           * orbit's reference frame turns in its own plane, and using the world
+           * vertical instead would leave the body sliding around on screen.
+           * The angle is minus the body's current bearing from periapsis, which
+           * pins it to a fixed direction.
+           */
+          const ang = Math.atan2(
+            V.dot(V.sub(selected, primary), el2.v),
+            V.dot(V.sub(selected, primary), el2.u),
+          );
+          camera.setRotation(-ang, el2.w);
+          camera.centerOn(primary.x, primary.y, primary.z);
         }
       }
 
@@ -783,11 +859,12 @@ export function initUI(
 
       // Drag preview: aim arrow plus the forward-integrated path.
       if (mode === 'fling' && dragged) {
-        const vx = (to.x - from.x) * FLING_SCALE * camera.zoom;
-        const vy = (to.y - from.y) * FLING_SCALE * camera.zoom;
+        const vx = (to.x - from.x) * FLING_SCALE;
+        const vy = (to.y - from.y) * FLING_SCALE;
+        const vz = (to.z - from.z) * FLING_SCALE;
         if (state.predict) {
           pathCount = predictPath(
-            world.bodies, from.x, from.y, vx, vy, state.gravity, pathBuffer,
+            world.bodies, from.x, from.y, from.z, vx, vy, vz, state.gravity, pathBuffer,
           );
           renderer.drawPath(pathBuffer, pathCount, COLORS.predict);
         }
@@ -797,7 +874,7 @@ export function initUI(
       // Mark L4 while its challenge is running, so the target is visible.
       if (runner.active?.id === 'trojan') {
         const l4 = lagrangeL4(world);
-        if (l4) renderer.drawTarget(l4.x, l4.y, 60, COLORS.lagrange, 'L4');
+        if (l4) renderer.drawTarget(l4.x, l4.y, l4.z, 60, COLORS.lagrange, 'L4');
       }
 
       renderer.drawScaleBar();

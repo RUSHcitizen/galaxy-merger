@@ -71,19 +71,35 @@ export const RENDER = {
   DEGRADE_MS: 21,
   /** Frame-time (ms) below which it climbs back to high quality. */
   RECOVER_MS: 14,
-  /** Starfield tile size in world px; stars wrap on this grid. */
-  STAR_TILE: 1400,
-  /** Stars per parallax layer. */
-  STARS_PER_LAYER: 130,
+  /** Stars generated per depth layer (directions on the sky sphere). */
+  STARS_PER_LAYER: 420,
+  /** Screen radius at which a body starts being drawn as a lit sphere. */
+  SPHERE_MIN_RADIUS: 3,
+  /** Segments in a swept orbit ellipse. */
+  ORBIT_SEGMENTS: 128,
+  /** Depth-cue span, as a multiple of camera distance. */
+  DEPTH_FADE_SPAN: 3.5,
 } as const;
 
 /** Camera limits. */
 export const CAMERA = {
-  MIN_ZOOM: 0.08,
-  MAX_ZOOM: 8,
-  /** Wheel notch -> zoom multiplier. */
+  /** Vertical field of view, radians. */
+  FOV: 0.85,
+  /** Anything closer than this to the eye is clipped. */
+  NEAR: 1,
+  MIN_DISTANCE: 90,
+  MAX_DISTANCE: 30000,
+  /** Wheel notch -> distance multiplier. */
   ZOOM_STEP: 1.12,
-  /** Exponential smoothing per frame for zoom and follow-panning. */
+  /** Radians of camera swing per pixel dragged. */
+  ORBIT_SENSITIVITY: 0.006,
+  /**
+   * Smallest |ray.z| that still counts as hitting the reference plane. Below
+   * this the camera is so close to edge-on that the intersection runs away to
+   * the horizon and spawning there would be unusable.
+   */
+  MIN_GRAZE: 0.12,
+  /** Exponential smoothing per frame for follow-panning. */
   SMOOTHING: 0.22,
 } as const;
 
@@ -121,6 +137,7 @@ export const COLORS = {
   lagrange: '#5cff9d',
   orbit: '#ffd166',
   select: '#ffffff',
+  grid: '#7c9cff',
 } as const;
 
 export type BodyKind = 'body' | 'star' | 'blackhole';
@@ -146,8 +163,12 @@ export interface SandboxState {
   showVectors: boolean;
   /** Additive glow pass on/off (the single biggest render cost). */
   glow: boolean;
-  /** Parallax starfield behind the simulation. */
+  /** Starfield behind the simulation. */
   stars: boolean;
+  /** Reference grid on the z = 0 plane. */
+  grid: boolean;
+  /** Draw large bodies as lit spheres rather than flat glows. */
+  shading: boolean;
   /** Merge bodies on contact. Off = they pass through each other. */
   merging: boolean;
   /** Draw the Kepler ellipse and elements for the selected body. */
@@ -174,6 +195,8 @@ export const state: SandboxState = {
   showVectors: false,
   glow: true,
   stars: true,
+  grid: true,
+  shading: true,
   merging: true,
   showOrbits: true,
   predict: true,

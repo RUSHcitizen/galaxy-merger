@@ -45,7 +45,7 @@ function loadFromHash(): boolean {
   world.clear();
   world.addAll(shared.bodies);
   camera.reset();
-  camera.setZoom(shared.zoom);
+  camera.setDistance(shared.distance);
   renderer.clearAll();
   ui.onWorldReplaced();
   return true;
@@ -88,12 +88,7 @@ function frame(now: number): void {
 
     const steps = Math.max(1, Math.min(quality.profile.maxSubsteps, state.substeps | 0));
     const dt = (state.timeStep * (state.stepOnce ? 1 : scale)) / steps;
-    const opts = {
-      dt,
-      G: state.gravity,
-      centerX: renderer.centerX,
-      centerY: renderer.centerY,
-    };
+    const opts = { dt, G: state.gravity };
     for (let i = 0; i < steps; i++) world.step(opts);
 
     world.tickCooldowns(scale);
@@ -110,7 +105,7 @@ function frame(now: number): void {
       world.resolveCollisions();
       drainMergeEvents();
     }
-    world.cull(renderer.centerX, renderer.centerY);
+    world.cull(renderer.centerX, renderer.centerY, renderer.centerZ);
     ui.validateSelection();
     state.stepOnce = false;
   }
@@ -153,7 +148,7 @@ function drainDisruptEvents(): void {
   if (events.length === 0) return;
   let loudest = 0;
   for (const d of events) {
-    sparks.emit(d.x, d.y, 0, 0, d.color, 14, 1.1 + d.scale * 0.15);
+    sparks.emit(d.x, d.y, d.z, 0, 0, 0, d.color, 14, 1.1 + d.scale * 0.15);
     if (d.scale > loudest) loudest = d.scale;
   }
   audio.merge(Math.min(1, 0.45 + loudest / 20));
@@ -176,7 +171,7 @@ function drainMergeEvents(): void {
   for (let i = 0; i < events.length; i++) {
     const m = events[i];
     const n = Math.min(18, 5 + Math.round(m.scale));
-    sparks.emit(m.x, m.y, m.vx, m.vy, m.color, n, 0.6 + m.scale * 0.12);
+    sparks.emit(m.x, m.y, m.z, m.vx, m.vy, m.vz, m.color, n, 0.6 + m.scale * 0.12);
     if (m.scale > loudest) loudest = m.scale;
   }
   // Scale by the biggest body involved, nudged up when many merged at once.
