@@ -158,11 +158,11 @@ export function initUI(
   });
   bindToggle('stars', () => state.stars, (v) => {
     state.stars = v;
-    camera.centerOn(camera.target.x, camera.target.y, camera.target.z); // redraw backdrop
+    renderer.invalidateBackdrop();
   });
   bindToggle('grid', () => state.grid, (v) => {
     state.grid = v;
-    camera.centerOn(camera.target.x, camera.target.y, camera.target.z);
+    renderer.invalidateBackdrop();
   });
   bindToggle('shading', () => state.shading, (v) => (state.shading = v));
   bindToggle('show-vectors', () => state.showVectors, (v) => (state.showVectors = v));

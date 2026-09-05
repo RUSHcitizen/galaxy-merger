@@ -57,6 +57,27 @@ function quantizeColor(hex: string): number {
   return ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
 }
 
+/**
+ * A body's recent path, kept in *world* space as a ring buffer.
+ *
+ * The previous version painted trails into a persistence buffer and faded it
+ * each frame, which is cheap but only valid while the world-to-screen mapping
+ * holds still. Under a perspective camera any orbit or dolly invalidates every
+ * pixel already drawn, so the buffer had to be thrown away — which is what made
+ * dragging flash and the picture jump. Storing the path as geometry and
+ * re-projecting it each frame costs more, but it is correct under any camera
+ * motion: the trails simply swing round with everything else.
+ */
+interface Trail {
+  /** x, y, z interleaved. */
+  pts: Float32Array;
+  count: number;
+  /** Next write slot. */
+  head: number;
+  /** Frame this trail was last touched, so dead bodies can be pruned. */
+  seen: number;
+}
+
 /** Per-body scratch, reused every frame so the draw loop never allocates. */
 interface Item {
   body: Body;
@@ -93,6 +114,17 @@ export class Renderer {
   /** Star directions on the unit sphere (x, y, z interleaved), per layer. */
   private starLayers: Array<{ dirs: Float32Array; size: number; alpha: number }> = [];
 
+  private trails = new Map<number, Trail>();
+  /** Screen-space scratch for one trail: x, y, visible-flag interleaved. */
+  private trailScreen = new Float32Array(RENDER.TRAIL_CAPACITY * 3);
+  private frameNo = 0;
+  /**
+   * Set whenever the backdrop buffer's contents are no longer valid — a resize
+   * or a quality change reallocates it, which clears it. Without this the
+   * starfield and grid stay blank until the camera happens to move.
+   */
+  private backdropDirty = true;
+
   /** Reusable projection scratch, so the draw loop never allocates. */
   private pr: Projected = { x: 0, y: 0, depth: 0, scale: 0, visible: false };
   private starScratch: Projected = { x: 0, y: 0, depth: 0, scale: 0, visible: false };
@@ -120,9 +152,9 @@ export class Renderer {
 
   setProfile(profile: QualityProfile): void {
     this.profile = profile;
-    this.buildStars();
     this.dpr = -1; // defeat the early-out so buffers are rebuilt
     this.resize();
+    this.backdropDirty = true;
   }
 
   /* ------------------------------------------------------------- viewport */
@@ -157,6 +189,7 @@ export class Renderer {
     this.bloomBCtx.setTransform(1, 0, 0, 1, 0, 0);
 
     this.dropSprites();
+    this.backdropDirty = true;
   }
 
   private dropSprites(): void {
@@ -179,9 +212,15 @@ export class Renderer {
     return this.camera.target.z;
   }
 
+  /** Force the starfield and grid to be redrawn on the next frame. */
+  invalidateBackdrop(): void {
+    this.backdropDirty = true;
+  }
+
   clearAll(): void {
     this.ctx.clearRect(0, 0, this.width, this.height);
     this.view.clearRect(0, 0, this.width, this.height);
+    this.trails.clear();
   }
 
   get spriteMB(): number {
@@ -190,13 +229,24 @@ export class Renderer {
 
   /* ------------------------------------------------------------ backdrop */
 
+  /**
+   * Generate the starfield once, from a fixed seed.
+   *
+   * Two things follow from that. The sky is identical on every load and every
+   * quality tier, so it never changes identity underneath you; and lowering the
+   * tier draws a *prefix* of the same list rather than a fresh random set, so
+   * stars only ever appear or disappear, never jump to new places.
+   */
   private buildStars(): void {
+    if (this.starLayers.length > 0) return; // already generated; never re-roll
+
+    const rand = mulberry32(0x5eed1e);
     const mk = (n: number, size: number, alpha: number) => {
       const dirs = new Float32Array(n * 3);
       for (let i = 0; i < n; i++) {
         // Uniform on the sphere: z uniform in [-1,1], angle uniform in [0,2π).
-        const z = Math.random() * 2 - 1;
-        const a = Math.random() * Math.PI * 2;
+        const z = rand() * 2 - 1;
+        const a = rand() * Math.PI * 2;
         const r = Math.sqrt(1 - z * z);
         dirs[i * 3] = Math.cos(a) * r;
         dirs[i * 3 + 1] = Math.sin(a) * r;
@@ -204,11 +254,12 @@ export class Renderer {
       }
       return { dirs, size, alpha };
     };
-    const n = this.profile.starsPerLayer;
+    // Built at the largest tier's budget; smaller tiers draw fewer of these.
+    const n = RENDER.STARS_PER_LAYER;
     this.starLayers = [
-      mk(n * 3, 1.0, 0.34),
-      mk(Math.round(n * 1.6), 1.5, 0.5),
-      mk(Math.round(n * 0.6), 2.1, 0.75),
+      mk(n * 3, 1.0, 0.3),
+      mk(Math.round(n * 1.6), 1.4, 0.42),
+      mk(Math.round(n * 0.6), 2.0, 0.6),
     ];
   }
 
@@ -232,7 +283,11 @@ export class Renderer {
         ctx.globalAlpha = layer.alpha;
         const s = layer.size;
         const d = layer.dirs;
-        for (let i = 0; i < d.length; i += 3) {
+        // Draw a prefix scaled to the tier, so the pattern is a subset of the
+        // same sky rather than a different one.
+        const share = this.profile.starsPerLayer / RENDER.STARS_PER_LAYER;
+        const limit = Math.min(d.length, Math.round((d.length / 3) * share) * 3);
+        for (let i = 0; i < limit; i += 3) {
           // Project a point very far away in this direction.
           const FAR = 1e6;
           cam.project(eye.x + d[i] * FAR, eye.y + d[i + 1] * FAR, eye.z + d[i + 2] * FAR, p);
@@ -244,7 +299,7 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
-    if (state.grid) this.drawGrid();
+    if (state.grid && this.profile.stars) this.drawGrid();
   }
 
   /** Concentric rings and spokes on the reference plane. */
@@ -263,7 +318,7 @@ export class Renderer {
     const SEG = 72;
     for (let k = 1; k <= rings; k++) {
       const r = step * k;
-      ctx.globalAlpha = 0.24 * (1 - (k - 1) / rings);
+      ctx.globalAlpha = 0.11 * (1 - (k - 1) / rings);
       ctx.beginPath();
       let started = false;
       for (let i = 0; i <= SEG; i++) {
@@ -283,7 +338,7 @@ export class Renderer {
       ctx.stroke();
     }
 
-    ctx.globalAlpha = 0.14;
+    ctx.globalAlpha = 0.06;
     ctx.beginPath();
     const outer = step * rings;
     for (let i = 0; i < 12; i++) {
@@ -301,18 +356,106 @@ export class Renderer {
 
   /* ---------------------------------------------------------------- trails */
 
-  private fade(trail: number): void {
-    const ctx = this.ctx;
-    if (trail <= 0.001) {
-      ctx.clearRect(0, 0, this.width, this.height);
-      return;
+  /** Append the current position of every body to its trail. */
+  private sampleTrails(bodies: Body[]): void {
+    const cap = RENDER.TRAIL_CAPACITY;
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      let t = this.trails.get(b.id);
+      if (!t) {
+        t = { pts: new Float32Array(cap * 3), count: 0, head: 0, seen: this.frameNo };
+        this.trails.set(b.id, t);
+      }
+      const h = t.head;
+      t.pts[h * 3] = b.x;
+      t.pts[h * 3 + 1] = b.y;
+      t.pts[h * 3 + 2] = b.z;
+      t.head = (h + 1) % cap;
+      if (t.count < cap) t.count++;
+      t.seen = this.frameNo;
     }
-    const frames = 3 * Math.pow(30, trail);
-    const alpha = Math.min(1, Math.max(0.012, 1 / frames));
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = `rgba(0,0,0,${alpha})`;
-    ctx.fillRect(0, 0, this.width, this.height);
-    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /** Forget trails belonging to bodies that no longer exist. */
+  private pruneTrails(): void {
+    for (const [id, t] of this.trails) {
+      if (this.frameNo - t.seen > RENDER.TRAIL_SAMPLE * 4) this.trails.delete(id);
+    }
+  }
+
+  /**
+   * Draw each visible body's path, oldest to newest.
+   *
+   * The fade is done in two passes rather than per-segment: stroking every
+   * segment separately so each could carry its own alpha would mean thousands
+   * of one-line paths per frame. Instead the whole path is stroked faintly and
+   * the recent third again more brightly, which reads as a fade for two strokes
+   * per body.
+   */
+  private drawTrails(items: Item[], order: number[], state: SandboxState): void {
+    const want = Math.round(state.trail * this.profile.trailPoints);
+    if (want < 2) return;
+
+    const ctx = this.ctx;
+    const cam = this.camera;
+    const p = this.pr;
+    const cap = RENDER.TRAIL_CAPACITY;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (let k = 0; k < order.length; k++) {
+      const it = items[order[k]];
+      const t = this.trails.get(it.body.id);
+      if (!t || t.count < 2) continue;
+
+      const n = Math.min(want, t.count);
+      const recent = Math.max(2, Math.round(n * 0.34));
+
+      ctx.strokeStyle = it.body.color;
+      // Tapered to the body's own size, with a floor so distant trails survive.
+      const w = Math.max(1.2, Math.min(7, it.r * 1.25));
+
+      /*
+       * Project once into a scratch buffer, then stroke it twice. Both fade
+       * passes walk the same points, so re-projecting per pass would double the
+       * per-point cost for nothing.
+       */
+      const scr = this.trailScreen;
+      let m = 0;
+      for (let i = n; i >= 1; i--) {
+        // Walk backwards from the newest sample.
+        const idx = (t.head - i + cap * 2) % cap;
+        cam.project(t.pts[idx * 3], t.pts[idx * 3 + 1], t.pts[idx * 3 + 2], p);
+        scr[m * 3] = p.x;
+        scr[m * 3 + 1] = p.y;
+        // A break marker, so a point behind the camera splits the polyline
+        // rather than drawing a stray chord across the screen.
+        scr[m * 3 + 2] = p.visible ? 1 : 0;
+        m++;
+      }
+
+      for (let pass = 0; pass < 2; pass++) {
+        const start = pass === 0 ? 0 : m - recent;
+        ctx.globalAlpha = (pass === 0 ? 0.3 : 0.72) * it.dim;
+        ctx.lineWidth = pass === 0 ? w * 0.75 : w;
+        ctx.beginPath();
+        let started = false;
+        for (let i = Math.max(0, start); i < m; i++) {
+          if (scr[i * 3 + 2] === 0) {
+            started = false;
+            continue;
+          }
+          if (!started) {
+            ctx.moveTo(scr[i * 3], scr[i * 3 + 1]);
+            started = true;
+          } else {
+            ctx.lineTo(scr[i * 3], scr[i * 3 + 1]);
+          }
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
   }
 
   /* --------------------------------------------------------------- sprites */
@@ -356,7 +499,7 @@ export class Renderer {
     if (light >= 0) {
       // Lit sphere: a soft halo, then a disc whose bright side faces the light.
       const halo = g.createRadialGradient(half, half, r * 0.9, half, half, glow);
-      halo.addColorStop(0, `rgba(${cr},${cg},${cb},0.32)`);
+      halo.addColorStop(0, `rgba(${cr},${cg},${cb},0.18)`);
       halo.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
       g.fillStyle = halo;
       g.fillRect(0, 0, size, size);
@@ -389,10 +532,13 @@ export class Renderer {
     } else {
       const grad = g.createRadialGradient(half, half, 0, half, half, glow);
       const core = Math.min(0.5, r / glow);
-      grad.addColorStop(0, 'rgba(255,255,255,0.72)');
-      grad.addColorStop(core * 0.42, `rgba(${cr},${cg},${cb},0.98)`);
-      grad.addColorStop(core, `rgba(${cr},${cg},${cb},0.6)`);
-      grad.addColorStop(Math.min(0.98, core + 0.3), `rgba(${cr},${cg},${cb},0.13)`);
+      // Deliberately restrained: these are drawn additively, so overlapping
+      // glows stack. A hot white core and a strong halo make a busy scene
+      // saturate to white and lose all its colour.
+      grad.addColorStop(0, 'rgba(255,255,255,0.42)');
+      grad.addColorStop(core * 0.42, `rgba(${cr},${cg},${cb},0.72)`);
+      grad.addColorStop(core, `rgba(${cr},${cg},${cb},0.34)`);
+      grad.addColorStop(Math.min(0.98, core + 0.3), `rgba(${cr},${cg},${cb},0.07)`);
       grad.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
       g.fillStyle = grad;
       g.fillRect(0, 0, size, size);
@@ -430,18 +576,20 @@ export class Renderer {
     const ctx = this.ctx;
     const cam = this.camera;
 
-    if (cam.moved) {
-      // A perspective change is not an affine transform of the old pixels, so
-      // unlike the 2D version there is nothing to salvage: the trail buffer is
-      // dropped whenever the camera itself moves. Frame rotation is exempt —
-      // see Camera.setRotation.
-      if (cam.viewChanged) ctx.clearRect(0, 0, this.width, this.height);
+    if (cam.moved || this.backdropDirty) {
       this.drawBackdrop(state);
+      this.backdropDirty = false;
       cam.clearMoved();
     }
 
     this.spritesThisFrame = 0;
-    this.fade(state.trail);
+    this.frameNo++;
+    // Trails are geometry now, so the scene buffer is simply cleared each
+    // frame. Nothing survives between frames that a camera move could
+    // invalidate, which is what removes the flashing while dragging.
+    ctx.clearRect(0, 0, this.width, this.height);
+    if (!state.paused && this.frameNo % RENDER.TRAIL_SAMPLE === 0) this.sampleTrails(bodies);
+    if (this.frameNo % 120 === 0) this.pruneTrails();
 
     // --- project, depth-cue and sort ---
     const items = this.items;
@@ -495,7 +643,7 @@ export class Renderer {
     order.sort((a, c) => items[c].depth - items[a].depth);
 
     ctx.globalCompositeOperation = state.glow ? 'lighter' : 'source-over';
-    this.drawStreaks(items, order, state);
+    this.drawTrails(items, order, state);
 
     for (let k = 0; k < order.length; k++) {
       const it = items[order[k]];
@@ -573,45 +721,6 @@ export class Renderer {
     }
   }
 
-  /**
-   * Motion blur: a round-capped line from each body's previous position to its
-   * current one. Without it a body travelling faster than its own diameter per
-   * frame paints a dotted line into the persistence buffer instead of a track.
-   */
-  private drawStreaks(items: Item[], order: number[], state: SandboxState): void {
-    if (state.paused) return;
-    const ctx = this.ctx;
-    const cam = this.camera;
-    const p = this.pr;
-    ctx.lineCap = 'round';
-
-    for (let k = 0; k < order.length; k++) {
-      const it = items[order[k]];
-      const b = it.body;
-      const dx = b.x - b.px;
-      const dy = b.y - b.py;
-      const dz = b.z - b.pz;
-      const moved2 = dx * dx + dy * dy + dz * dz;
-      if (moved2 < 1e-6) continue;
-
-      cam.project(b.px, b.py, b.pz, p);
-      if (!p.visible) continue;
-
-      const seg = Math.hypot(p.x - it.sx, p.y - it.sy);
-      // Too short to matter, or a merge teleporting a body to the barycentre.
-      if (seg < 1 || seg > RENDER.MAX_STREAK) continue;
-
-      ctx.strokeStyle = b.color;
-      ctx.lineWidth = Math.max(2, it.r * 2);
-      ctx.globalAlpha = it.dim;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(it.sx, it.sy);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-  }
-
   private drawVectors(items: Item[]): void {
     const ctx = this.ctx;
     const cam = this.camera;
@@ -678,7 +787,7 @@ export class Renderer {
 
     if (bloom) {
       v.globalCompositeOperation = 'lighter';
-      v.globalAlpha = Math.min(1, state.bloom * 1.6);
+      v.globalAlpha = Math.min(1, state.bloom);
       v.drawImage(bloom, 0, 0, this.width, this.height);
       v.globalAlpha = 1;
       v.globalCompositeOperation = 'source-over';
@@ -954,6 +1063,17 @@ function dot(ctx: Ctx, x: number, y: number, r: number): void {
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
+}
+
+/** Small deterministic PRNG, so the sky is the same on every run. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function mixTo(channel: number, toward: number, t: number): number {

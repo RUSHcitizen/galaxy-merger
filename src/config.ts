@@ -77,6 +77,10 @@ export const RENDER = {
   SPHERE_MIN_RADIUS: 3,
   /** Segments in a swept orbit ellipse. */
   ORBIT_SEGMENTS: 128,
+  /** World-space trail history retained per body (ring-buffer capacity). */
+  TRAIL_CAPACITY: 110,
+  /** Frames between trail samples. Every other frame is plenty at 60fps. */
+  TRAIL_SAMPLE: 2,
   /** Depth-cue span, as a multiple of camera distance. */
   DEPTH_FADE_SPAN: 3.5,
 } as const;
@@ -189,7 +193,7 @@ export const state: SandboxState = {
   trail: 0.55,
   spawnMass: 220,
   substeps: 2,
-  bloom: 0.55,
+  bloom: 0.32,
   paused: false,
   stepOnce: false,
   showVectors: false,

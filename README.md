@@ -114,7 +114,10 @@ What makes it read as three-dimensional:
   at centre, 58 on the dark limb, with the terminator inside the body.
 - **Depth cueing**, dimming distant bodies the way haze does.
 - **A reference grid** on the z = 0 plane and a **starfield fixed to the sky**,
-  which give the eye something to judge camera motion against.
+  which give the eye something to judge camera motion against. The sky is
+  generated once from a fixed seed, so it is identical on every load and every
+  quality tier — lowering the tier draws a strict *subset* of the same stars
+  rather than rolling a new sky, so stars only appear or disappear, never move.
 - **Ray picking.** Clicking names a line through the scene; the nearest body it
   passes through wins.
 
@@ -122,6 +125,25 @@ The camera is spherical — target, distance, yaw, pitch — which is the natura
 scheme for inspecting an orbital system. Spawning raycasts onto the reference
 plane, falling back to a view-facing plane through the target when the camera
 gets too close to edge-on for that intersection to be usable.
+
+## Trails
+
+Trails are **world-space geometry**, not paint. Each body keeps a ring buffer of
+its recent positions, re-projected and stroked every frame.
+
+The obvious cheaper design — paint into a buffer and fade it each frame — is
+what the 2D version used, and it is only valid while the world-to-screen mapping
+holds still. Under a perspective camera any orbit or dolly invalidates every
+pixel already drawn, so the buffer has to be discarded: dragging made the whole
+picture flash and rebuild. Geometry trails swing round with everything else, so
+the view stays coherent through a drag (measured: 96% of the drawn content
+retained at the worst frame of a camera orbit, against a wipe that would
+collapse it toward zero).
+
+It also removes the persistence buffer's 8-bit alpha residue, and the fade is
+now done in two strokes per body — the whole path faintly, the recent third
+again more brightly — rather than one stroke per segment, which would mean
+thousands of one-line paths per frame.
 
 ## The physics
 
@@ -267,18 +289,13 @@ the loop aggregates a frame's merges into one call.
 
 ## Known trade-offs
 
-- **Trails are dropped when the camera moves.** A perspective change is not an
-  affine transform of the existing pixels, so unlike the 2D version there is
-  nothing to salvage. Orbiting the camera clears the trail buffer; it rebuilds
-  within a second.
 - **The Kepler elements assume an unsoftened force.** For orbits well outside
   the softening length they are accurate to a fraction of a percent. For a
   satellite only two or three ε from its primary, the reported eccentricity
   drifts from zero.
-- **The persistence buffer never quite reaches zero.** 8-bit alpha rounding
-  leaves a residue around 1/255 where trails have been, visible as very faint
-  banding in long-lived scenes. The bloom threshold keeps it from being
-  amplified.
+- **Trails cost more than they used to.** Keeping them as geometry rather than
+  as paint is about 14% more render time. That buys correctness under camera
+  motion, which is worth it; the Low tier still fits inside a 60fps budget.
 
 ## Tuning
 

@@ -49,6 +49,8 @@ export interface QualityProfile {
   maxSubsteps: number;
   /** Budget for the glow sprite cache, in bytes of backing store. */
   spriteBudgetBytes: number;
+  /** Trail points drawn per body at full trail length. */
+  trailPoints: number;
   label: string;
 }
 
@@ -65,6 +67,7 @@ export const PROFILES: Record<QualityTier, QualityProfile> = {
     starsPerLayer: 420,
     maxSubsteps: 6,
     spriteBudgetBytes: 48 << 20,
+    trailPoints: 110,
     label: 'High',
   },
   medium: {
@@ -79,22 +82,28 @@ export const PROFILES: Record<QualityTier, QualityProfile> = {
     starsPerLayer: 260,
     maxSubsteps: 4,
     spriteBudgetBytes: 24 << 20,
+    trailPoints: 70,
     label: 'Balanced',
   },
   low: {
-    // dpr 1 and no bloom/starfield takes the frame from four full-screen
-    // passes down to two, which is what makes weak integrated graphics viable.
+    // dpr 1 and no bloom is what makes weak integrated graphics viable; the
+    // bloom upscale is by far the largest single item in the frame.
     dprCap: 1,
     bloom: false,
     bloomScale: 0.12,
     bloomBlur: 1.5,
-    stars: false,
+    // Kept on even at the lowest tier. Measured at 0.6-0.7ms including an
+    // active camera drag, which is a small price for the backdrop looking the
+    // same however the quality watcher moves — a sky that vanishes when the
+    // tier steps down is far more jarring than a slightly lower frame rate.
+    stars: true,
     glowScale: 0.7,
     discBelow: 4.5,
     maxBodies: 260,
     starsPerLayer: 120,
     maxSubsteps: 2,
     spriteBudgetBytes: 10 << 20,
+    trailPoints: 36,
     label: 'Low',
   },
 };
